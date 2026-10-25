@@ -8,3 +8,5 @@ config.yaml
 .claude/
 brag-output/
 .DS_Store
+work/
+/gauntlet-stamp.json

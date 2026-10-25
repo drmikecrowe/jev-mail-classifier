@@ -1,0 +1,4 @@
+[
+  {"name": "tests", "cmd": "mise exec -- uv run pytest -q"},
+  {"name": "secrets", "cmd": "mise exec gitleaks@8.30.1 -- gitleaks git --no-banner ."}
+]
