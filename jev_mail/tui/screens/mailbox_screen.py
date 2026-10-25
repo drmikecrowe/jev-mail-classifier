@@ -58,5 +58,7 @@ class MailboxScreen(Screen[MailboxConfig]):
                 folder=self.query_one("#folder", Input).value.strip() or "INBOX",
                 poll_interval_seconds=int(self.query_one("#poll_interval", Input).value or 60),
                 max_emails_per_run=int(self.query_one("#max_emails_per_run", Input).value or 25),
+                tls=self._mailbox.tls,
+                tls_ca_file=self._mailbox.tls_ca_file,
             )
         )

@@ -187,3 +187,44 @@ def test_save_env_leaves_keys_not_passed_untouched(tmp_path):
     content = env_path.read_text()
     assert "UNTOUCHED=still-here" in content
     assert "NEW=value" in content
+
+
+def test_tls_settings_round_trip_through_save_and_load(tmp_path, monkeypatch):
+    """S1.4"""
+    monkeypatch.setenv("IMAP_USERNAME", "me@example.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "secret")
+    config = AppConfig(
+        mailbox=MailboxConfig(host="127.0.0.1", port=1143, tls="starttls", tls_ca_file="/tmp/bridge.pem"),
+        jev=JevSettings(),
+        categories=[Category(name="invoice", description="Invoice")],
+    )
+    config_path = tmp_path / "config.yaml"
+
+    save_config(config, config_path)
+    loaded = load_config(config_path, tmp_path / ".env")
+
+    assert loaded.mailbox.tls == "starttls"
+    assert loaded.mailbox.tls_ca_file == "/tmp/bridge.pem"
+
+
+def test_unknown_tls_value_is_rejected(tmp_path):
+    """S1.5"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mailbox:
+  host: 127.0.0.1
+  tls: plain
+categories:
+  invoice:
+    description: Invoice
+"""
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(config_path, tmp_path / ".env")
+
+    message = str(excinfo.value)
+    assert "mailbox.tls" in message
+    assert "ssl" in message
+    assert "starttls" in message

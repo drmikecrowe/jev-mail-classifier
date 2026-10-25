@@ -196,3 +196,34 @@ async def test_mailbox_screen_rejects_empty_host(tmp_path):
         await pilot.pause()
 
         assert app.config.mailbox.host == "imap.example.com"
+
+
+async def test_wizard_keeps_hand_set_tls_settings(tmp_path):
+    """S1.6: the wizard has no tls widgets, so a save must not erase them."""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        """
+mailbox:
+  host: 127.0.0.1
+  port: 1143
+  tls: starttls
+  tls_ca_file: /tmp/bridge.pem
+categories:
+  invoice:
+    description: Invoice
+"""
+    )
+    app = JevMailConfigApp(config_path, env_path, load_config(config_path, env_path))
+
+    async with app.run_test(size=(100, 60)) as pilot:
+        await pilot.pause()
+        await pilot.click("#continue")  # credentials, fields unchanged
+        await pilot.pause()
+        await pilot.click("#continue")  # mailbox, no field changed
+        await pilot.pause()
+        await pilot.press("s")  # categories: Save & exit
+
+    written = config_path.read_text()
+    assert "tls: starttls" in written
+    assert "tls_ca_file: /tmp/bridge.pem" in written

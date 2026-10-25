@@ -122,3 +122,67 @@ def test_context_manager_logs_out():
     with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server):
         pass
     fake_server.logout.assert_called_once()
+
+
+def _call_names(client: MagicMock) -> list[str]:
+    return [name for name, _, _ in client.method_calls]
+
+
+def test_starttls_with_ca_file_upgrades_before_login(monkeypatch):
+    """S1.1: Bridge serves plain IMAP on 1143; the connection must upgrade
+    with STARTTLS, verified against Bridge's exported cert, before login."""
+    imap_client = MagicMock()
+    monkeypatch.setattr("jev_mail.mailbox.IMAPClient", imap_client)
+    sentinel_context = object()
+    create_context = MagicMock(return_value=sentinel_context)
+    monkeypatch.setattr("ssl.create_default_context", create_context)
+    config = MailboxConfig(host="127.0.0.1", port=1143, tls="starttls", tls_ca_file="/tmp/bridge.pem")
+
+    Mailbox(config).__enter__()
+
+    imap_client.assert_called_once_with("127.0.0.1", port=1143, use_uid=True, ssl=False)
+    create_context.assert_called_once_with(cafile="/tmp/bridge.pem")
+    client = imap_client.return_value
+    client.starttls.assert_called_once_with(ssl_context=sentinel_context)
+    names = _call_names(client)
+    assert names.index("starttls") < names.index("login")
+
+
+def test_starttls_without_ca_file_uses_default_context(monkeypatch):
+    """S1.2: no tls_ca_file means imapclient's own default verification."""
+    imap_client = MagicMock()
+    monkeypatch.setattr("jev_mail.mailbox.IMAPClient", imap_client)
+    config = MailboxConfig(host="127.0.0.1", port=1143, tls="starttls")
+
+    Mailbox(config).__enter__()
+
+    client = imap_client.return_value
+    client.starttls.assert_called_once_with(ssl_context=None)
+    names = _call_names(client)
+    assert names.index("starttls") < names.index("login")
+
+
+def test_config_without_tls_keys_connects_with_implicit_tls(tmp_path, monkeypatch):
+    """S1.3 / M2: an existing config.yaml with no tls keys behaves as before."""
+    from jev_mail.config import load_config
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mailbox:
+  host: imap.example.com
+categories:
+  invoice:
+    description: Invoice
+"""
+    )
+    imap_client = MagicMock()
+    monkeypatch.setattr("jev_mail.mailbox.IMAPClient", imap_client)
+
+    config = load_config(config_path, tmp_path / ".env")
+    Mailbox(config.mailbox).__enter__()
+
+    assert config.mailbox.tls == "ssl"
+    assert config.mailbox.tls_ca_file == ""
+    imap_client.assert_called_once_with("imap.example.com", port=993, use_uid=True, ssl=True)
+    imap_client.return_value.starttls.assert_not_called()

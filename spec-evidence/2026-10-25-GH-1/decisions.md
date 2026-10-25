@@ -49,3 +49,4 @@ Layers come from `tools/gauntlet-layers.json`.
 
 - 2026-10-25: first draft, with Decide 1 and Decide 2 ruled.
 - 2026-10-25: Gate 1a round 1 fixes: Orientation states what Decide 1 and Decide 2 ruled and restates the brief's one-change limit; Definitions add Phase 1 and the SQLite-only processed set; S2.2 names the literal line; S1.6 names its button ids.
+- 2026-10-25 (build): S1.6 said "clicks `#save` on the categories screen", but that screen has no `#save` button. Saving there is the `s` binding, `Binding("s", "save", "Save & exit")` at `jev_mail/tui/screens/categories_screen.py:21`; `#save` belongs to `CategoryEditScreen`. S1.6 now says "presses `s` (Save & exit)". The behavior under test is unchanged.

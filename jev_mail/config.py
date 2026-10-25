@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 ACTION_TYPES = ("tag", "move", "flag", "unflag", "mark_read", "mark_unread", "webhook")
+TLS_MODES = ("ssl", "starttls")
 
 
 class ConfigError(Exception):
@@ -58,6 +59,8 @@ class MailboxConfig:
     folder: str = "INBOX"
     poll_interval_seconds: int = 60
     max_emails_per_run: int = 25
+    tls: str = "ssl"
+    tls_ca_file: str = ""
 
 
 @dataclass
@@ -105,7 +108,11 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         folder=mb_raw.get("folder", "INBOX"),
         poll_interval_seconds=int(mb_raw.get("poll_interval_seconds", 60)),
         max_emails_per_run=int(mb_raw.get("max_emails_per_run", 25)),
+        tls=mb_raw.get("tls", "ssl"),
+        tls_ca_file=mb_raw.get("tls_ca_file", ""),
     )
+    if mailbox.tls not in TLS_MODES:
+        raise ConfigError(f"mailbox.tls must be one of {', '.join(TLS_MODES)}, got {mailbox.tls!r}")
     if not mailbox.host:
         raise ConfigError("mailbox.host is empty — run `jev-mail configure` and fill in the IMAP host")
 
@@ -142,6 +149,8 @@ def save_config(config: AppConfig, config_path: str | Path) -> None:
             "folder": config.mailbox.folder,
             "poll_interval_seconds": config.mailbox.poll_interval_seconds,
             "max_emails_per_run": config.mailbox.max_emails_per_run,
+            "tls": config.mailbox.tls,
+            "tls_ca_file": config.mailbox.tls_ca_file,
         },
         "jev": {
             "provider": config.jev.provider,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import email
+import ssl
 from dataclasses import dataclass
 from email.header import decode_header
 from email.message import Message
@@ -36,7 +37,12 @@ class Mailbox:
 
     def __enter__(self) -> "Mailbox":
         if self._server is None:
-            self._server = IMAPClient(self._config.host, port=self._config.port, use_uid=True)
+            starttls = self._config.tls == "starttls"
+            self._server = IMAPClient(self._config.host, port=self._config.port, use_uid=True, ssl=not starttls)
+            if starttls:
+                # Proton Bridge serves plain IMAP on 1143 and needs an upgrade before login.
+                context = ssl.create_default_context(cafile=self._config.tls_ca_file) if self._config.tls_ca_file else None
+                self._server.starttls(ssl_context=context)
             self._server.login(self._config.username, self._config.password)
             self._server.select_folder(self._config.folder)
         return self
