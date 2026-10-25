@@ -113,6 +113,8 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         accounts_raw = raw["accounts"] or []
         if not accounts_raw:
             raise ConfigError("accounts: is empty — list at least one account")
+        if not isinstance(accounts_raw, list) or not all(isinstance(a, dict) for a in accounts_raw):
+            raise ConfigError("accounts: must be a list of account blocks, each with host, username, password")
         accounts = [_load_account(a, env, f"accounts[{i}]") for i, a in enumerate(accounts_raw)]
         mailbox, extra_accounts, extra_accounts_raw = accounts[0], accounts[1:], accounts_raw[1:]
     else:

@@ -336,6 +336,13 @@ def test_empty_or_invalid_accounts_is_refused(tmp_path, accounts):
         _load(tmp_path, f"accounts: {accounts}\ncategories:\n  a:\n    description: a\n")
 
 
+@pytest.mark.parametrize("accounts", ["\n  host: y", "\n  - imap.example.com", "\n  -"])
+def test_malformed_accounts_is_refused(tmp_path, accounts):
+    """Adversary round 1: a mapping, a string entry or a null entry is a ConfigError, not a traceback."""
+    with pytest.raises(ConfigError, match="accounts"):
+        _load(tmp_path, f"accounts: {accounts}\ncategories:\n  a:\n    description: a\n")
+
+
 def test_one_account_saves_exactly_as_before(tmp_path, monkeypatch):
     """S2.5"""
     monkeypatch.setenv("IMAP_USERNAME", "me@example.com")
