@@ -18,9 +18,9 @@ What must not change: the existing tests, the default implicit-TLS connection on
 
 ## Orientation
 
-- Lane: engineering, because this is a pre-refactor verification spike on the fork owner's own mail setup, with no product author and no user-facing behavior asked for; the brief allows one transport-level config change.
-- Decided: Decide 1, `tls_ca_file`, governs S1.1, S1.4 and the Touches entry for `jev_mail/config.py` (Mike Crowe, 2026-10-25). Decide 2, dry-run, governs S2.3 (Mike Crowe, 2026-10-25).
-- Brief: issue GH-1, "Goal / Steps / Check / Note".
+- Lane: engineering, because this is a pre-refactor verification spike on the fork owner's own mail setup, with no product author and no user-facing behavior asked for.
+- Decided: Decide 1 ruled that `tls: starttls` verifies Bridge's certificate against a file named by a new `tls_ca_file` setting, not by default verification and not by skipping verification; it governs S1.1, S1.2, S1.4 and the Touches entry for `jev_mail/config.py` (Mike Crowe, 2026-10-25). Decide 2 ruled that the TypeSafe run in S2.3 is a dry run, not a real run that marks mail and runs actions (Mike Crowe, 2026-10-25).
+- Brief: issue GH-1. Its goal is to prove the fork runs against Bridge with no new code. Its one exception: if Bridge needs plain connect plus STARTTLS, a `tls: starttls` config field is the one code change allowed in this phase. Decide 1's `tls_ca_file` is part of that same TLS setting. Any other code change is out of scope.
 - Base: `469c7a2` on `master`.
 
 ## Definitions
@@ -29,6 +29,8 @@ What must not change: the existing tests, the default implicit-TLS connection on
 - **Bridge certificate file**: the TLS certificate that Bridge exports (Bridge settings, export TLS certificates), saved at an absolute path on the engineer's machine.
 - **Unprocessed count**: the number of UIDs that `SEARCH UNKEYWORD $JevProcessed` returns in the configured folder.
 - **Folder count**: the number of UIDs that `SEARCH ALL` returns in the configured folder.
+- **Phase 1**: the refactor that follows this phase, named in brief GH-1. It is not built here.
+- **SQLite-only processed set**: a design where jev-mail stores processed message ids in a local SQLite file instead of an IMAP keyword. S2.2 only records whether Phase 1 needs it.
 - **Live run record**: the lines the engineer writes into EVIDENCE.md for an S2 scenario: the command, its exit code, the counts, and outcome words. It holds no subject, address, or body from the live mailbox.
 
 ## Scenarios
@@ -40,14 +42,14 @@ What must not change: the existing tests, the default implicit-TLS connection on
 - S1.3 (boundary) Given a `config.yaml` whose `mailbox` block has no `tls` and no `tls_ca_file` key and a mocked `IMAPClient`, when `load_config` runs and then `Mailbox(config).__enter__()` runs, then `config.mailbox.tls == "ssl"`, `config.mailbox.tls_ca_file == ""`, `IMAPClient` is called with `ssl=True`, and `starttls` is never called.
 - S1.4 Given an `AppConfig` whose mailbox has `tls="starttls"` and `tls_ca_file="/tmp/bridge.pem"`, when `save_config` writes it and `load_config` reads it back, then the loaded mailbox has `tls == "starttls"` and `tls_ca_file == "/tmp/bridge.pem"`.
 - S1.5 (negative) Given a `config.yaml` with `mailbox.tls: plain`, when `load_config` runs, then it raises `ConfigError` whose message contains `mailbox.tls`, `ssl` and `starttls`.
-- S1.6 Given `JevMailConfigApp` started on a `config.yaml` whose mailbox has `tls: starttls` and `tls_ca_file: /tmp/bridge.pem`, when the pilot walks the credentials screen, presses Continue on the mailbox screen with no field changed, and the app saves, then the written `config.yaml` still holds `tls: starttls` and `tls_ca_file: /tmp/bridge.pem`.
+- S1.6 Given a `config.yaml` whose mailbox has `tls: starttls` and `tls_ca_file: /tmp/bridge.pem` and one category, and `JevMailConfigApp` started with `config=load_config(<that file>)`, when the pilot clicks `#continue` on the credentials screen with its fields unchanged, clicks `#continue` on the mailbox screen with no field changed, and clicks `#save` on the categories screen, then the written `config.yaml` still holds `tls: starttls` and `tls_ca_file: /tmp/bridge.pem`.
 
 ### S2. Live runs against Bridge
 
 These run by hand on the engineer's machine. Each records a live run record in EVIDENCE.md.
 
 - S2.1 Given `config.yaml` with `mailbox.host: 127.0.0.1`, `port: 1143`, `tls: starttls`, `tls_ca_file: <Bridge certificate file>`, and the Bridge username and password in `.env` as `IMAP_USERNAME` and `IMAP_PASSWORD`, when the engineer records the unprocessed count and the folder count, runs `./jev-mail run --dry-run`, and records both counts again, then the command exits 0, every line it prints matches `[dry-run] '<subject>': <category> (<p>) -> <action>` or `[dry-run] '<subject>': no category matched`, at least one such line is printed, and both counts are equal before and after.
-- S2.2 Given the S2.1 settings and one UID `u` that the engineer picks from the folder, when the engineer adds the flag `$JevProcessed` to `u`, reads the flags of `u`, removes `$JevProcessed` from `u`, and reads the flags of `u` again, then the live run record says `accepted` when the first read holds `$JevProcessed` and the second does not, or says `rejected` with the server's error text when the add fails or the first read lacks the keyword. A `rejected` record also states that Phase 1 needs a SQLite-only processed set.
+- S2.2 Given the S2.1 settings and one UID `u` that the engineer picks from the folder, when the engineer adds the flag `$JevProcessed` to `u`, reads the flags of `u`, removes `$JevProcessed` from `u`, and reads the flags of `u` again, then the live run record says `accepted` when the first read holds `$JevProcessed` and the second does not, or says `rejected` with the server's error text when the add fails or the first read lacks the keyword. A `rejected` record also holds the line `Phase 1 needs a SQLite-only processed set.`
 - S2.3 Given the S2.1 settings, `jev.provider: typesafe`, and a live `TYPESAFE_API_KEY` in `.env`, when the engineer records the unprocessed count, runs `./jev-mail run --dry-run`, and records the count again, then the live run record holds the exit code and says `works` when the exit code is 0 and at least one S2.1-shaped line is printed, or says `fails` with the error line the command printed. In both cases the unprocessed count is equal before and after.
 
 ## Must NOT

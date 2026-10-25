@@ -48,3 +48,4 @@ Layers come from `tools/gauntlet-layers.json`.
 ## Revision log
 
 - 2026-10-25: first draft, with Decide 1 and Decide 2 ruled.
+- 2026-10-25: Gate 1a round 1 fixes: Orientation states what Decide 1 and Decide 2 ruled and restates the brief's one-change limit; Definitions add Phase 1 and the SQLite-only processed set; S2.2 names the literal line; S1.6 names its button ids.
