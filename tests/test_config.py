@@ -228,3 +228,145 @@ categories:
     assert "mailbox.tls" in message
     assert "ssl" in message
     assert "starttls" in message
+
+
+ONE_ACCOUNT_YAML = """
+mailbox:
+  host: imap.example.com
+  username: ${IMAP_USERNAME}
+  password: ${IMAP_PASSWORD}
+  folder: Archive
+  poll_interval_seconds: 120
+  max_emails_per_run: 10
+jev:
+  default_threshold: 0.7
+categories:
+  invoice:
+    description: Invoice or billing
+    threshold: 0.8
+    actions:
+      - type: tag
+        value: Invoice
+"""
+
+# save_config's output for ONE_ACCOUNT_YAML at e393a22, captured before the change.
+ONE_ACCOUNT_SAVED = (
+    "mailbox:\n  host: imap.example.com\n  port: 993\n  username: ${IMAP_USERNAME}\n"
+    "  password: ${IMAP_PASSWORD}\n  folder: Archive\n  poll_interval_seconds: 120\n"
+    "  max_emails_per_run: 10\n  tls: ssl\n  tls_ca_file: ''\njev:\n  provider: auto\n"
+    "  default_threshold: 0.7\ncategories:\n  invoice:\n    description: Invoice or billing\n"
+    "    threshold: 0.8\n    actions:\n    - type: tag\n      value: Invoice\n"
+)
+
+TWO_ACCOUNTS_YAML = """
+accounts:
+  - host: imap.example.com
+    username: ${A_USER}
+    password: ${A_PASS}
+  - host: ${B_HOST}
+    username: ${B_USER}
+    password: ${B_PASS}
+    tls: starttls
+    port: 1143
+categories:
+  invoice:
+    description: Invoice
+"""
+
+TWO_ACCOUNTS_ENV = {
+    "A_USER": "a@example.com",
+    "A_PASS": "apass",
+    "B_HOST": "imap.b.example.com",
+    "B_USER": "b@example.com",
+    "B_PASS": "bpass",
+}
+
+
+def _load(tmp_path, text: str):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(text)
+    return load_config(config_path, env_path=tmp_path / "does-not-exist.env")
+
+
+def test_mailbox_form_loads_as_one_account(tmp_path, monkeypatch):
+    """S2.1"""
+    monkeypatch.setenv("IMAP_USERNAME", "me@example.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "secret")
+
+    config = _load(tmp_path, ONE_ACCOUNT_YAML)
+
+    assert config.mailbox == MailboxConfig(
+        host="imap.example.com",
+        username="me@example.com",
+        password="secret",
+        folder="Archive",
+        poll_interval_seconds=120,
+        max_emails_per_run=10,
+    )
+    assert config.accounts == [config.mailbox]
+
+
+def test_accounts_list_loads_every_account(tmp_path, monkeypatch):
+    """S2.2"""
+    for key, value in TWO_ACCOUNTS_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    config = _load(tmp_path, TWO_ACCOUNTS_YAML)
+
+    first, second = config.accounts
+    assert config.mailbox is first
+    assert (first.host, first.username, first.password) == ("imap.example.com", "a@example.com", "apass")
+    assert (second.host, second.username, second.password) == ("imap.b.example.com", "b@example.com", "bpass")
+    assert (second.tls, second.port) == ("starttls", 1143)
+
+
+def test_mailbox_and_accounts_together_is_refused(tmp_path):
+    """S2.3"""
+    text = "mailbox:\n  host: x\naccounts:\n  - host: y\ncategories:\n  a:\n    description: a\n"
+    with pytest.raises(ConfigError) as excinfo:
+        _load(tmp_path, text)
+    assert "mailbox" in str(excinfo.value)
+    assert "accounts" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("accounts", ["[]", "\n  - host: y\n    tls: plain"])
+def test_empty_or_invalid_accounts_is_refused(tmp_path, accounts):
+    """S2.4"""
+    with pytest.raises(ConfigError, match="accounts"):
+        _load(tmp_path, f"accounts: {accounts}\ncategories:\n  a:\n    description: a\n")
+
+
+def test_one_account_saves_exactly_as_before(tmp_path, monkeypatch):
+    """S2.5"""
+    monkeypatch.setenv("IMAP_USERNAME", "me@example.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "secret")
+    config = _load(tmp_path, ONE_ACCOUNT_YAML)
+
+    out = tmp_path / "out.yaml"
+    save_config(config, out)
+
+    assert out.read_text() == ONE_ACCOUNT_SAVED
+
+
+def test_wizard_edit_keeps_other_accounts_as_written(tmp_path, monkeypatch):
+    """S2.6"""
+    import yaml
+
+    for key, value in TWO_ACCOUNTS_ENV.items():
+        monkeypatch.setenv(key, value)
+    config = _load(tmp_path, TWO_ACCOUNTS_YAML)
+    config.mailbox = MailboxConfig(host="imap2.example.com", username="new@example.com", password="pw")
+
+    out = tmp_path / "out.yaml"
+    save_config(config, out)
+
+    text = out.read_text()
+    written = yaml.safe_load(text)
+    assert "mailbox" not in written
+    first, second = written["accounts"]
+    assert first["host"] == "imap2.example.com"
+    assert first["username"] == "${IMAP_USERNAME}"
+    assert first["password"] == "${IMAP_PASSWORD}"
+    assert second == yaml.safe_load(TWO_ACCOUNTS_YAML)["accounts"][1]
+    for literal in ("new@example.com", "pw", *TWO_ACCOUNTS_ENV.values()):
+        assert literal not in text, literal

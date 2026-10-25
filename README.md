@@ -160,7 +160,8 @@ Every configured category becomes one independent yes/no question in a **single*
 call per email (multi-label: an email can match several categories at once). Each
 category's probability is checked against its threshold, and every action attached to a
 matching category runs. Processed mail is marked with a private IMAP keyword
-(`$JevProcessed`) -- no separate database to keep in sync.
+(`$JevProcessed`), which stays the source of truth. A real run also writes a local
+record of each processed email to `state.db` beside `config.yaml`; a dry run writes nothing.
 
 ## Config, if you'd rather skip the TUI
 

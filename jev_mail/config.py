@@ -74,6 +74,14 @@ class AppConfig:
     mailbox: MailboxConfig
     jev: JevSettings
     categories: list[Category]
+    # Accounts 2 to n of an `accounts:` list. The wizard edits only `mailbox`,
+    # so save_config writes these back from their raw ${VAR} entries.
+    extra_accounts: list[MailboxConfig] = field(default_factory=list)
+    extra_accounts_raw: list[dict] = field(default_factory=list)
+
+    @property
+    def accounts(self) -> list[MailboxConfig]:
+        return [self.mailbox, *self.extra_accounts]
 
     def category_threshold(self, category: Category) -> float:
         return category.threshold if category.threshold is not None else self.jev.default_threshold
@@ -99,22 +107,17 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
     raw = yaml.safe_load(config_path.read_text()) or {}
     env = dict(os.environ)
 
-    mb_raw = raw.get("mailbox", {})
-    mailbox = MailboxConfig(
-        host=_interpolate(mb_raw.get("host", ""), env),
-        port=int(mb_raw.get("port", 993)),
-        username=_interpolate(mb_raw.get("username", ""), env),
-        password=_interpolate(mb_raw.get("password", ""), env),
-        folder=mb_raw.get("folder", "INBOX"),
-        poll_interval_seconds=int(mb_raw.get("poll_interval_seconds", 60)),
-        max_emails_per_run=int(mb_raw.get("max_emails_per_run", 25)),
-        tls=mb_raw.get("tls", "ssl"),
-        tls_ca_file=mb_raw.get("tls_ca_file", ""),
-    )
-    if mailbox.tls not in TLS_MODES:
-        raise ConfigError(f"mailbox.tls must be one of {', '.join(TLS_MODES)}, got {mailbox.tls!r}")
-    if not mailbox.host:
-        raise ConfigError("mailbox.host is empty — run `jev-mail configure` and fill in the IMAP host")
+    if "mailbox" in raw and "accounts" in raw:
+        raise ConfigError("config has both mailbox: and accounts: — keep only one")
+    if "accounts" in raw:
+        accounts_raw = raw["accounts"] or []
+        if not accounts_raw:
+            raise ConfigError("accounts: is empty — list at least one account")
+        accounts = [_load_account(a, env, f"accounts[{i}]") for i, a in enumerate(accounts_raw)]
+        mailbox, extra_accounts, extra_accounts_raw = accounts[0], accounts[1:], accounts_raw[1:]
+    else:
+        mailbox = _load_account(raw.get("mailbox", {}), env, "mailbox")
+        extra_accounts, extra_accounts_raw = [], []
 
     jev_raw = raw.get("jev", {})
     jev = JevSettings(
@@ -134,24 +137,54 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
     if not categories:
         raise ConfigError("config has no categories — run `jev-mail configure` to add some")
 
-    return AppConfig(mailbox=mailbox, jev=jev, categories=categories)
+    return AppConfig(
+        mailbox=mailbox,
+        jev=jev,
+        categories=categories,
+        extra_accounts=extra_accounts,
+        extra_accounts_raw=extra_accounts_raw,
+    )
+
+
+def _load_account(mb_raw: dict, env: dict, label: str) -> MailboxConfig:
+    mailbox = MailboxConfig(
+        host=_interpolate(mb_raw.get("host", ""), env),
+        port=int(mb_raw.get("port", 993)),
+        username=_interpolate(mb_raw.get("username", ""), env),
+        password=_interpolate(mb_raw.get("password", ""), env),
+        folder=mb_raw.get("folder", "INBOX"),
+        poll_interval_seconds=int(mb_raw.get("poll_interval_seconds", 60)),
+        max_emails_per_run=int(mb_raw.get("max_emails_per_run", 25)),
+        tls=mb_raw.get("tls", "ssl"),
+        tls_ca_file=mb_raw.get("tls_ca_file", ""),
+    )
+    if mailbox.tls not in TLS_MODES:
+        raise ConfigError(f"{label}.tls must be one of {', '.join(TLS_MODES)}, got {mailbox.tls!r}")
+    if not mailbox.host:
+        raise ConfigError(f"{label}.host is empty — run `jev-mail configure` and fill in the IMAP host")
+    return mailbox
 
 
 def save_config(config: AppConfig, config_path: str | Path) -> None:
     """Writes config.yaml. Mailbox credentials are always written as ${VAR}
     references, never as literal secrets, regardless of what's loaded in memory."""
+    mailbox = {
+        "host": config.mailbox.host,
+        "port": config.mailbox.port,
+        "username": "${IMAP_USERNAME}",
+        "password": "${IMAP_PASSWORD}",
+        "folder": config.mailbox.folder,
+        "poll_interval_seconds": config.mailbox.poll_interval_seconds,
+        "max_emails_per_run": config.mailbox.max_emails_per_run,
+        "tls": config.mailbox.tls,
+        "tls_ca_file": config.mailbox.tls_ca_file,
+    }
     raw = {
-        "mailbox": {
-            "host": config.mailbox.host,
-            "port": config.mailbox.port,
-            "username": "${IMAP_USERNAME}",
-            "password": "${IMAP_PASSWORD}",
-            "folder": config.mailbox.folder,
-            "poll_interval_seconds": config.mailbox.poll_interval_seconds,
-            "max_emails_per_run": config.mailbox.max_emails_per_run,
-            "tls": config.mailbox.tls,
-            "tls_ca_file": config.mailbox.tls_ca_file,
-        },
+        **(
+            {"accounts": [mailbox, *config.extra_accounts_raw]}
+            if config.extra_accounts_raw
+            else {"mailbox": mailbox}
+        ),
         "jev": {
             "provider": config.jev.provider,
             "default_threshold": config.jev.default_threshold,

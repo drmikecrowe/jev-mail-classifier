@@ -35,3 +35,15 @@
 - Other option: leave `source` empty until Phase 2 adds other sources.
 - Why: every decision in this phase comes from the Jev call, and an explicit value lets Phase 2 add others without a migration.
 - Command: hotfix
+
+### A7. `cmd_run` opens `state.db` after the first account connects, not before the loop
+
+- Other option: open `State` once before the account loop, whenever the run is not a dry run.
+- Why: a run that cannot reach any server then leaves no empty `state.db` behind, including in the cwd of the existing connection-error test that runs with `--dir .`.
+- Command: build
+
+### A8. `watch` also writes a state row after each keyword
+
+- Other option: `watch` writes no state rows in this phase, and only `run` does.
+- Why: decisions.md restates the brief as "a state row is written right after `mark_processed`, and only when `mark_processed` runs"; `watch` calls `mark_processed` too, and the record would otherwise have gaps.
+- Command: build

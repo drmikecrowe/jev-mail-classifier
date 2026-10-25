@@ -3,10 +3,10 @@ from __future__ import annotations
 import httpx
 
 from jev_mail.config import Action
-from jev_mail.mailbox import Email, Mailbox
+from jev_mail.mailbox import Email, MailBackend
 
 
-def run_action(mailbox: Mailbox, mail: Email, action: Action, category_name: str, probability: float) -> None:
+def run_action(mailbox: MailBackend, mail: Email, action: Action, category_name: str, probability: float) -> None:
     if action.type == "tag":
         mailbox.add_tag(mail.uid, action.value)
     elif action.type == "move":

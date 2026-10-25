@@ -2,26 +2,15 @@ from __future__ import annotations
 
 import email
 import ssl
-from dataclasses import dataclass
 from email.header import decode_header
 from email.message import Message
 
 from imapclient import IMAPClient
 
 from jev_mail.config import MailboxConfig
+from jev_mail.mailbox.base import Email
 
 PROCESSED_KEYWORD = "$JevProcessed"
-
-
-@dataclass
-class Email:
-    uid: int
-    subject: str
-    body: str
-
-    @property
-    def state(self) -> str:
-        return f"Subject: {self.subject}\n\n{self.body}"
 
 
 class Mailbox:
@@ -73,7 +62,16 @@ class Mailbox:
         emails = []
         for uid, data in response.items():
             msg = email.message_from_bytes(data[b"RFC822"])
-            emails.append(Email(uid=uid, subject=_decode_subject(msg), body=_extract_body(msg)))
+            emails.append(
+                Email(
+                    uid=uid,
+                    subject=_decode_subject(msg),
+                    body=_extract_body(msg),
+                    message_id=_decode_header(msg, "Message-ID"),
+                    sender=_decode_header(msg, "From"),
+                    list_unsubscribe=_decode_header(msg, "List-Unsubscribe"),
+                )
+            )
         return emails
 
     def mark_processed(self, uid: int) -> None:
@@ -107,7 +105,11 @@ class Mailbox:
 
 
 def _decode_subject(msg: Message) -> str:
-    raw = msg.get("Subject", "")
+    return _decode_header(msg, "Subject")
+
+
+def _decode_header(msg: Message, name: str) -> str:
+    raw = msg.get(name, "")
     parts = decode_header(raw)
     return "".join(
         part.decode(encoding or "utf-8", errors="replace") if isinstance(part, bytes) else part

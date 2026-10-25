@@ -8,10 +8,11 @@ from pathlib import Path
 
 from jev_mail.actions import run_action
 from jev_mail.classify import classify, matched_categories
-from jev_mail.config import AppConfig, ConfigError, load_config
-from jev_mail.mailbox import Mailbox
+from jev_mail.config import AppConfig, ConfigError, MailboxConfig, load_config
+from jev_mail.mailbox import MailBackend, Mailbox
 from jev_mail.providers import ProviderError, get_jev_client
 from jev_mail.providers.base import JevClient
+from jev_mail.state import State
 
 
 def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -19,16 +20,26 @@ def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
     return base / "config.yaml", base / ".env"
 
 
-def _process_unprocessed(mailbox: Mailbox, client: JevClient, config: AppConfig, dry_run: bool) -> None:
-    emails = mailbox.fetch_unprocessed(limit=config.mailbox.max_emails_per_run)
-    if len(emails) == config.mailbox.max_emails_per_run:
+def _process_unprocessed(
+    mailbox: MailBackend,
+    client: JevClient,
+    config: AppConfig,
+    dry_run: bool,
+    *,
+    account: MailboxConfig | None = None,
+    state: State | None = None,
+) -> None:
+    account = account or config.mailbox
+    emails = mailbox.fetch_unprocessed(limit=account.max_emails_per_run)
+    if len(emails) == account.max_emails_per_run:
         print(
-            f"[jev-mail] hit max_emails_per_run ({config.mailbox.max_emails_per_run}) -- "
+            f"[jev-mail] hit max_emails_per_run ({account.max_emails_per_run}) -- "
             "there may be more unprocessed mail left for next run"
         )
     for mail in emails:
         probabilities = classify(client, config, mail.state)
         matched = matched_categories(config, probabilities)
+        applied = []
 
         if not matched and dry_run:
             print(f"[dry-run] {mail.subject!r}: no category matched")
@@ -40,17 +51,21 @@ def _process_unprocessed(mailbox: Mailbox, client: JevClient, config: AppConfig,
                     print(f"[dry-run] {mail.subject!r}: {category.name} ({probability:.2f}) -> {action.type}")
                 else:
                     run_action(mailbox, mail, action, category.name, probability)
+                    applied.append({"category": category.name, **action.to_dict()})
 
         # Mark processed even when nothing matched -- otherwise a never-matching
         # email gets reclassified (and re-billed) on every future run.
         if not dry_run:
             mailbox.mark_processed(mail.uid)
+            # The keyword stays the source of truth; the state row is only written after it.
+            if state is not None:
+                state.record(f"{account.host}/{account.username}", mail, "jev", probabilities, applied)
 
 
-def _mailbox_error_message(exc: Exception, config: AppConfig) -> str:
+def _mailbox_error_message(exc: Exception, account: MailboxConfig) -> str:
     if isinstance(exc, OSError):
-        return f"couldn't connect to {config.mailbox.host}:{config.mailbox.port} -- {exc}"
-    return f"IMAP error talking to {config.mailbox.host} -- {exc}"
+        return f"couldn't connect to {account.host}:{account.port} -- {exc}"
+    return f"IMAP error talking to {account.host} -- {exc}"
 
 
 def cmd_configure(args: argparse.Namespace) -> int:
@@ -75,12 +90,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    try:
-        with Mailbox(config.mailbox) as mailbox:
-            _process_unprocessed(mailbox, client, config, args.dry_run)
-    except (OSError, imaplib.IMAP4.error) as exc:
-        print(f"error: {_mailbox_error_message(exc, config)}", file=sys.stderr)
-        return 1
+    state = None
+    for account in config.accounts:
+        try:
+            with Mailbox(account) as mailbox:
+                # Opened only after a connection succeeds, and never on a dry run.
+                if state is None and not args.dry_run:
+                    state = State(config_path.parent / "state.db")
+                _process_unprocessed(mailbox, client, config, args.dry_run, account=account, state=state)
+        except (OSError, imaplib.IMAP4.error) as exc:
+            print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -92,11 +112,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
     except (ConfigError, ProviderError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    if len(config.accounts) > 1:
+        print("error: watch handles one account only -- use `run` for an accounts: list", file=sys.stderr)
+        return 1
 
     print(f"watching {config.mailbox.folder}@{config.mailbox.host} (ctrl-c to stop)...")
     try:
         with Mailbox(config.mailbox) as mailbox:
-            _process_unprocessed(mailbox, client, config, args.dry_run)
+            state = None if args.dry_run else State(config_path.parent / "state.db")
+            _process_unprocessed(mailbox, client, config, args.dry_run, state=state)
             while True:
                 if mailbox.supports_idle():
                     mailbox.idle()
@@ -104,9 +128,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     mailbox.idle_done()
                 else:
                     time.sleep(config.mailbox.poll_interval_seconds)
-                _process_unprocessed(mailbox, client, config, args.dry_run)
+                _process_unprocessed(mailbox, client, config, args.dry_run, state=state)
     except (OSError, imaplib.IMAP4.error) as exc:
-        print(f"error: {_mailbox_error_message(exc, config)}", file=sys.stderr)
+        print(f"error: {_mailbox_error_message(exc, config.mailbox)}", file=sys.stderr)
         return 1
 
 

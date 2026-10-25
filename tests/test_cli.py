@@ -153,3 +153,184 @@ def test_main_auto_runs_when_config_exists(monkeypatch, tmp_path):
     cli.main()
 
     assert called["cmd"] == "run"
+
+
+def _fake_mailbox_class(emails: list[Email]):
+    """A stand-in for jev_mail.cli.Mailbox that records every account it is built with."""
+
+    class FakeMailbox:
+        built: list[MailboxConfig] = []
+        fetch_limits: list[int] = []
+        marked: list[int] = []
+
+        def __init__(self, account):
+            FakeMailbox.built.append(account)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def fetch_unprocessed(self, limit=None):
+            FakeMailbox.fetch_limits.append(limit)
+            return list(emails)
+
+        def mark_processed(self, uid):
+            FakeMailbox.marked.append(uid)
+
+        def add_tag(self, uid, value):
+            pass
+
+        def move(self, uid, folder):
+            pass
+
+    return FakeMailbox
+
+
+def _fake_client(*answers: dict):
+    client = MagicMock()
+    client.decide.side_effect = list(answers)
+    return client
+
+
+INVOICE_CATEGORIES = """
+categories:
+  Invoice:
+    description: Invoice
+    threshold: 0.6
+    actions:
+      - type: tag
+        value: Invoice
+      - type: move
+        folder: Invoices
+"""
+
+TWO_ACCOUNTS = (
+    "accounts:\n"
+    "  - host: a.example.com\n    max_emails_per_run: 3\n"
+    "  - host: b.example.com\n    max_emails_per_run: 4\n" + INVOICE_CATEGORIES
+)
+
+
+def _args(tmp_path, *argv: str):
+    return cli.build_parser().parse_args(["--dir", str(tmp_path), *argv])
+
+
+def test_real_run_marks_processed_then_writes_one_state_row(tmp_path):
+    """S3.1"""
+    import json
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    from jev_mail.state import State
+
+    db = tmp_path / "state.db"
+    rows_when_marked = []
+    mailbox = MagicMock()
+    mailbox.fetch_unprocessed.return_value = [
+        Email(uid=1, subject="Invoice #1", body="Please pay", message_id="<a1@example.com>")
+    ]
+    mailbox.mark_processed.side_effect = lambda uid: rows_when_marked.append(
+        sqlite3.connect(db).execute("SELECT count(*) FROM processed").fetchone()[0]
+    )
+    client = _fake_client({"Invoice": 0.9})
+    account = MailboxConfig(host="imap.example.com", username="me@example.com")
+    config = AppConfig(
+        mailbox=account,
+        jev=JevSettings(default_threshold=0.6),
+        categories=[Category(name="Invoice", description="Invoice", actions=[Action(type="tag", value="Invoice")])],
+    )
+
+    cli._process_unprocessed(mailbox, client, config, dry_run=False, account=account, state=State(db))
+
+    mailbox.mark_processed.assert_called_once_with(1)
+    assert rows_when_marked == [0]
+    rows = sqlite3.connect(db).execute(
+        "SELECT account, message_id, source, probabilities, actions, processed_at FROM processed"
+    ).fetchall()
+    assert len(rows) == 1
+    account_key, message_id, source, probabilities, actions, processed_at = rows[0]
+    assert (account_key, message_id, source) == ("imap.example.com/me@example.com", "<a1@example.com>", "jev")
+    assert json.loads(probabilities) == {"Invoice": 0.9}
+    assert json.loads(actions) == [{"category": "Invoice", "type": "tag", "value": "Invoice"}]
+    assert datetime.fromisoformat(processed_at).utcoffset() == timedelta(0)
+
+
+def test_dry_run_marks_nothing_and_creates_no_state_db(tmp_path, monkeypatch):
+    """S3.2"""
+    (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
+    fake = _fake_mailbox_class([Email(uid=1, subject="Invoice #1", body="b")])
+    monkeypatch.setattr(cli, "Mailbox", fake)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client({"Invoice": 0.9}))
+
+    assert cli.cmd_run(_args(tmp_path, "run", "--dry-run")) == 0
+
+    assert fake.marked == []
+    assert not (tmp_path / "state.db").exists()
+
+
+def test_run_processes_each_account_in_turn(tmp_path, monkeypatch):
+    """S3.3"""
+    (tmp_path / "config.yaml").write_text(TWO_ACCOUNTS)
+    fake = _fake_mailbox_class([])
+    monkeypatch.setattr(cli, "Mailbox", fake)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 0
+
+    assert [account.host for account in fake.built] == ["a.example.com", "b.example.com"]
+    assert fake.fetch_limits == [3, 4]
+    assert (tmp_path / "state.db").exists()
+
+
+def test_watch_refuses_more_than_one_account(tmp_path, monkeypatch, capsys):
+    """S3.4"""
+    (tmp_path / "config.yaml").write_text(TWO_ACCOUNTS)
+    fake = _fake_mailbox_class([])
+    monkeypatch.setattr(cli, "Mailbox", fake)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+
+    assert cli.cmd_watch(_args(tmp_path, "watch")) == 1
+
+    err = capsys.readouterr().err
+    assert "watch" in err
+    assert "one account" in err
+    assert fake.built == []
+
+
+def test_watch_writes_a_state_row_after_the_keyword(tmp_path, monkeypatch):
+    """A8: watch records each processed email, as run does."""
+    import sqlite3
+
+    (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
+    base = _fake_mailbox_class([Email(uid=1, subject="Invoice #1", body="b", message_id="<w@example.com>")])
+
+    class FakeMailbox(base):
+        def supports_idle(self):
+            raise ConnectionResetError("stop the loop")
+
+    monkeypatch.setattr(cli, "Mailbox", FakeMailbox)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client({"Invoice": 0.9}))
+
+    assert cli.cmd_watch(_args(tmp_path, "watch")) == 1
+
+    assert FakeMailbox.marked == [1]
+    rows = sqlite3.connect(tmp_path / "state.db").execute("SELECT message_id FROM processed").fetchall()
+    assert rows == [("<w@example.com>",)]
+
+
+def test_dry_run_output_is_unchanged(tmp_path, monkeypatch, capsys):
+    """S5.1: the expected string is the dry-run output at e393a22."""
+    (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
+    fake = _fake_mailbox_class([Email(uid=2, subject="Invoice #1", body="b"), Email(uid=1, subject="Newsletter", body="b")])
+    monkeypatch.setattr(cli, "Mailbox", fake)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client({"Invoice": 0.9}, {"Invoice": 0.1}))
+
+    assert cli.cmd_run(_args(tmp_path, "run", "--dry-run")) == 0
+
+    assert capsys.readouterr().out == (
+        "[dry-run] 'Invoice #1': Invoice (0.90) -> tag\n"
+        "[dry-run] 'Invoice #1': Invoice (0.90) -> move\n"
+        "[dry-run] 'Newsletter': no category matched\n"
+    )

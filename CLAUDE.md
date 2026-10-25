@@ -27,7 +27,7 @@ mise exec -- uv run pytest tests/test_config.py::test_name   # one test
 
 Pipeline per email (`jev_mail/cli.py::_process_unprocessed`):
 
-1. `Mailbox.fetch_unprocessed` (`mailbox.py`) searches IMAP for `UNKEYWORD $JevProcessed`, newest first, capped at `mailbox.max_emails_per_run`. "Unprocessed" is the keyword, not `\Seen`. There is no database.
+1. `Mailbox.fetch_unprocessed` (`jev_mail/mailbox/imap.py`, behind the `MailBackend` Protocol in `jev_mail/mailbox/base.py`) searches IMAP for `UNKEYWORD $JevProcessed`, newest first, capped at the account's `max_emails_per_run`. "Unprocessed" is the keyword, not `\Seen`. The keyword is the source of truth; `state.db` (`state.py`, beside `config.yaml`) is a local record written after each keyword, and nothing reads it yet.
 2. `classify` (`classify.py`) sends every category to Jev in a **single** `decide()` call. Each category is an independent yes/no ("noul") question, so results are multi-label.
 3. `matched_categories` compares each probability against the category's `threshold`, falling back to `jev.default_threshold`.
 4. `run_action` (`actions.py`) dispatches on `Action.type` to `Mailbox` primitives or an `httpx.post` webhook.
@@ -39,6 +39,7 @@ Pipeline per email (`jev_mail/cli.py::_process_unprocessed`):
 - Secrets live only in `.env` (git-ignored). `config.yaml` refers to them as `${VAR}`. `load_config` loads `.env` with `override=False`, so real environment variables win.
 - `${VAR}` interpolation is applied only to `mailbox.host`, `username`, and `password`. Action fields (for example a webhook `url`) are not interpolated.
 - `save_config` always writes `${IMAP_USERNAME}` / `${IMAP_PASSWORD}`, never the literal values.
+- `config.yaml` holds either one `mailbox:` block or an `accounts:` list, never both. `AppConfig.mailbox` is the first account; accounts 2 to n are written back from their raw entries. `run` processes each account in turn; `watch` refuses more than one.
 - `save_env` merges: an empty value **deletes** that key. The credentials screen pre-fills from the existing `.env`, so a cleared field means "remove it".
 
 **TUI** (`jev_mail/tui/`, Textual): `JevMailConfigApp` chains three screens: Credentials (writes `.env`, has a "Test key" button) -> Mailbox -> Categories (with `CategoryEditScreen` as a modal). Each screen dismisses with its data, and callbacks on the app (`_after_credentials`, `_after_mailbox`, `_after_categories`) wire it into `self.config` before `save_config`. All CSS lives in the `CSS` string in `app.py`.

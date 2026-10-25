@@ -11,3 +11,4 @@ brag-output/
 work/
 /gauntlet-stamp.json
 .env.schema
+state.db

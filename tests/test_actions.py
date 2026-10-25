@@ -44,6 +44,32 @@ def test_run_action_webhook_posts_json(monkeypatch):
     assert captured["json"] == {"category": "urgent", "probability": 0.87, "subject": "Hello"}
 
 
+def test_run_action_drives_any_mail_backend():
+    """S1.3"""
+    from jev_mail.mailbox import MailBackend
+
+    backend = MagicMock(spec=MailBackend)
+    mail = Email(uid=7, subject="s", body="b")
+    for action in (
+        Action(type="tag", value="Invoice"),
+        Action(type="move", folder="Invoices"),
+        Action(type="flag"),
+        Action(type="unflag"),
+        Action(type="mark_read"),
+        Action(type="mark_unread"),
+    ):
+        run_action(backend, mail, action, "invoice", 0.9)
+
+    assert backend.method_calls == [
+        ("add_tag", (7, "Invoice"), {}),
+        ("move", (7, "Invoices"), {}),
+        ("set_flag", (7, True), {}),
+        ("set_flag", (7, False), {}),
+        ("set_seen", (7, True), {}),
+        ("set_seen", (7, False), {}),
+    ]
+
+
 def test_run_action_unknown_type_raises():
     with pytest.raises(ValueError):
         run_action(MagicMock(), MAIL, Action(type="bogus"), "invoice", 0.9)

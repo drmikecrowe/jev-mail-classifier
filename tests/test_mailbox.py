@@ -132,7 +132,7 @@ def test_starttls_with_ca_file_upgrades_before_login(monkeypatch):
     """S1.1: Bridge serves plain IMAP on 1143; the connection must upgrade
     with STARTTLS, verified against Bridge's exported cert, before login."""
     imap_client = MagicMock()
-    monkeypatch.setattr("jev_mail.mailbox.IMAPClient", imap_client)
+    monkeypatch.setattr("jev_mail.mailbox.imap.IMAPClient", imap_client)
     sentinel_context = object()
     create_context = MagicMock(return_value=sentinel_context)
     monkeypatch.setattr("ssl.create_default_context", create_context)
@@ -151,7 +151,7 @@ def test_starttls_with_ca_file_upgrades_before_login(monkeypatch):
 def test_starttls_without_ca_file_uses_default_context(monkeypatch):
     """S1.2: no tls_ca_file means imapclient's own default verification."""
     imap_client = MagicMock()
-    monkeypatch.setattr("jev_mail.mailbox.IMAPClient", imap_client)
+    monkeypatch.setattr("jev_mail.mailbox.imap.IMAPClient", imap_client)
     config = MailboxConfig(host="127.0.0.1", port=1143, tls="starttls")
 
     Mailbox(config).__enter__()
@@ -177,7 +177,7 @@ categories:
 """
     )
     imap_client = MagicMock()
-    monkeypatch.setattr("jev_mail.mailbox.IMAPClient", imap_client)
+    monkeypatch.setattr("jev_mail.mailbox.imap.IMAPClient", imap_client)
 
     config = load_config(config_path, tmp_path / ".env")
     Mailbox(config.mailbox).__enter__()
@@ -186,3 +186,41 @@ categories:
     assert config.mailbox.tls_ca_file == ""
     imap_client.assert_called_once_with("imap.example.com", port=993, use_uid=True, ssl=True)
     imap_client.return_value.starttls.assert_not_called()
+
+
+def test_fetch_unprocessed_reads_message_id_sender_and_list_unsubscribe():
+    """S1.4"""
+    raw = (
+        b"Message-ID: <a1@example.com>\r\n"
+        b"From: =?utf-8?q?Ann_Lee?= <ann@example.com>\r\n"
+        b"List-Unsubscribe: <mailto:unsub@example.com>\r\n"
+        b"Subject: Hello\r\n"
+        b"\r\n"
+        b"World\r\n"
+    )
+    fake_server = MagicMock()
+    fake_server.search.return_value = [1]
+    fake_server.fetch.return_value = {1: {b"RFC822": raw}}
+
+    with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server) as mailbox:
+        (mail,) = mailbox.fetch_unprocessed()
+
+    assert mail.message_id == "<a1@example.com>"
+    assert mail.sender == "Ann Lee <ann@example.com>"
+    assert mail.list_unsubscribe == "<mailto:unsub@example.com>"
+
+
+def test_missing_headers_are_empty_strings():
+    """S1.5"""
+    from jev_mail.mailbox import Email
+
+    fake_server = MagicMock()
+    fake_server.search.return_value = [1]
+    fake_server.fetch.return_value = {1: {b"RFC822": b"Subject: Hello\r\n\r\nWorld\r\n"}}
+
+    with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server) as mailbox:
+        (mail,) = mailbox.fetch_unprocessed()
+
+    assert (mail.message_id, mail.sender, mail.list_unsubscribe) == ("", "", "")
+    bare = Email(uid=1, subject="x", body="y")
+    assert (bare.message_id, bare.sender, bare.list_unsubscribe) == ("", "", "")
