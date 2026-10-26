@@ -167,14 +167,14 @@ Every layer of the manifest is `PASSED`.
 
 | Agent | Round | Model | Tokens |
 |---|---|---|---|
-| context-pack | 1 | claude-opus-5-5, claude-sonnet-5-5 | 66330/1096 |
+| context-pack | 1 | claude-sonnet-5-5 | 66330/1096 |
 | spec-evidence-intent | — | not run, engineering lane | unrecorded |
-| spec-evidence-adversary | 1 | claude-opus-5-5, claude-sonnet-5-5 | 218579/2345 |
+| spec-evidence-adversary | 1 | claude-sonnet-5-5 | 218579/2345 |
 
 ### Process notes
 
 - RED: the 7 tests for S1.1 to S1.4, S2.1, S2.2 and S3.1 failed before the `cli.py` change (7 failed, 19 passed in `tests/test_cli.py`). GREEN: the full suite passed after it (107 passed).
 - The context-pack round for GH-8 reported a Gortex MCP integration failure and emitted no record (`context-pack.md`); the plan was drafted from the doer's own reading.
 - Adversary round 2 did not run: round 1 had no confirmed finding, and no fix changed code.
-- The adversary transcript and the context-pack transcript each carry two `model` values; both are listed as read.
+- Each round's model is read from the `model` field of its assistant turns; every assistant turn of the context-pack and adversary transcripts ran on `claude-sonnet-5-5`. A first draft of this table also listed `claude-opus-5-5`, from a non-turn line of the transcript, and was corrected before Gate 2a was recorded.
 - `README.md`'s provider note is hard-wrapped; the edit kept its existing wrap style.
