@@ -52,6 +52,7 @@ Open decisions: none. Decide 1 ruled that only a Tier 0 dry-run line shows its s
   4. Noreply sender: `MONITOR`, source `heuristic`.
   A rule whose category name is not one of `config.categories` does not fire, and the next rule is tried. When no rule fires, there is no decision.
 - **Tier 0 hit**: `tier0.decide(mail, senders, config)` returns `(category, source)`, with `category` the configured `Category` of that name. No decision returns `None`.
+- **Move order**: for one email, the first `move` action of the first matched category in `config.categories` order runs. Every later `move` is skipped: it does not run, a dry run prints no line for it, and it is not in the state row's actions. Every other action type runs for every matched category.
 - **Account key**: `f"{account.host}/{account.username}"`, as `state.record` already uses.
 
 ## Scenarios
@@ -91,6 +92,8 @@ The configs below name categories by their exact names. "All five" means `BILLIN
 - S3.6 (boundary) Given the S3.5 inputs, when `_process_unprocessed` runs with `dry_run=True`, then stdout is exactly `[dry-run] 'Invoice #1': BILLING (0.90) -> tag`, `[dry-run] 'Invoice #1': BILLING (0.90) -> move`, each with a newline, and nothing for `BULK`.
 - S3.7 (boundary) Given the S3.1 inputs and a client whose `decide` always raises `ProviderError("boom")`, when `_process_unprocessed` runs with `dry_run=False`, then `mark_processed` is called with `3` only, and the call returns `1`.
 
+- S3.8 Given a one-account `config.yaml` that holds `senders_file: senders.csv`, a `senders.csv` with the line `deals@example.com,unsubscribe` under a `sender,verdict` header, the S3.1 categories, `jev_mail.cli.Mailbox` replaced with a fake that returns the S3.1 emails and whose `supports_idle` raises `ConnectionResetError` to end the loop after the first pass, and `jev_mail.cli.get_jev_client` replaced with the S3.1 client, when `cmd_watch` runs, then `decide` is called once, with the state of uid 2, and `move` is called with `(3, "BULK")`. `watch` has no `--review` option: `build_parser().parse_args(["watch", "--review", "x.csv"])` exits with status 2.
+
 ### S4. The review CSV
 
 - S4.1 Given a directory `<dir>` with a one-account `config.yaml` for host `imap.example.com` and username `user@example.com`, the S3.1 categories, a `senders.csv` with the line `deals@example.com,unsubscribe` under a `sender,verdict` header, `jev_mail.cli.Mailbox` replaced with a fake that returns the S3.1 emails, and `jev_mail.cli.get_jev_client` replaced with the S3.1 client, when `cmd_run` runs with `--dry-run --review <tmp>/review.csv` and `<tmp>` is outside `<dir>`, then it returns `0`, and `csv.reader` reads the file as three rows: `["account", "uid", "subject", "source", "BILLING", "BULK"]`, `["imap.example.com/user@example.com", "3", "Weekly deals", "census", "", "1.0"]` and `["imap.example.com/user@example.com", "2", "Invoice #1", "jev", "0.9", "0.1"]`.
@@ -126,11 +129,11 @@ The configs below name categories by their exact names. "All five" means `BILLIN
 - `jev_mail/tier0.py`: new; the OTP pattern, `load_senders(path) -> dict[str, str]` and `decide(mail, senders, config) -> tuple[Category, str] | None`.
 - `jev_mail/cli.py`: `_process_unprocessed` takes `senders` and an optional review writer, tries Tier 0 before `classify`, passes the source to `state.record`, prints the Tier 0 dry-run line, skips every `move` after the first; `cmd_run` loads the table, checks `--review`, opens the CSV; `cmd_watch` loads the table; `build_parser` adds `--review` to `run`; `main` sets `review` to `None` on the no-subcommand path.
 - `jev_mail/config.py`: `AppConfig.senders_file: str = ""`; `load_config` reads the `senders_file` key; `save_config` writes it when it is not empty.
-- `config.example.yaml`: replace `invoice`, `urgent` and `spam` with the five categories in the A9 order, `ACTION` keeping `threshold: 0.7` and the `webhook`; a comment on the move order; and a commented `senders_file: senders.csv` line (Decide 2, Mike Crowe, 2026-10-26).
+- `config.example.yaml`: replace `invoice`, `urgent` and `spam` with the five categories in the order BILLING, ACTION, PERSONAL, MONITOR, BULK, so a bill that Jev also calls bulk moves to BILLING, `ACTION` keeping `threshold: 0.7` and the `webhook`; a comment on the move order; and a commented `senders_file: senders.csv` line (Decide 2, Mike Crowe, 2026-10-26).
 - `senders.example.csv`: new; a `sender,verdict` header and one fake `example.com` row per verdict.
 - `.gitignore`: `senders.csv` and `sender-census.csv`.
 - `tests/test_tier0.py`: new; S1.1 to S1.10, S2.1 to S2.4, S5.2.
-- `tests/test_cli.py`: S2.6, S3.1 to S3.7, S4.1 to S4.5.
+- `tests/test_cli.py`: S2.6, S3.1 to S3.8, S4.1 to S4.5.
 - `tests/test_config.py`: S2.5, S2.7, S5.1.
 - `README.md`, `CLAUDE.md`: as S5.4 says.
 - `spec-evidence/2026-10-26-GH-3/EVIDENCE.md` (in build): the S5.3 and S5.4 readings, the M5 to M7 diff readings, and the S6.1 counts.
@@ -144,7 +147,7 @@ The configs below name categories by their exact names. "All five" means `BILLIN
 
 - A Tier 0 hit is final, so the email gets one category only: a bill from a bulk sender never gets `BILLING`. The fix is a `keep` row for that sender (GH-3 decision comment of 2026-10-25).
 - A noreply receipt that carries `List-Unsubscribe` lands in `BULK`, because rule 3 comes before rule 4 (same comment).
-- The OTP phrases are English only, and the noreply rule matches only the three exact local parts, so `noreply-billing@` and similar go to Jev (A10, A11).
+- The OTP phrases are English only, and the noreply rule matches only the three exact local parts, so `noreply-billing@` and similar go to Jev. The noreply rule keeps to the brief's three literals, and a bare number in a subject is not taken as a one-time code, because order and invoice numbers must reach Jev for `BILLING`.
 - The `From` header is not authenticated. A spoofed `From` of a table sender gets that sender's verdict. A spoofed `keep` sender only goes to Jev.
 - The `--review` check refuses paths inside `--dir` only. A path inside some other repository is allowed.
 - `senders.csv` is git-ignored, so git does not back it up.

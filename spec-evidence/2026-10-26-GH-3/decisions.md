@@ -61,3 +61,6 @@ Changes: S5.1 and the `config.example.yaml` Touches entry cite Decide 2's ruling
 
 ### Revision 1. Decide 1 and 2 ruled
 The engineer ruled A and A in the Decide round; SPEC.md was updated with those rulings.
+
+### Revision 2. Gate 1a round 1 fix
+Finding PR-REFERENT: the Touches entry for `config.example.yaml` now writes out the category order, and Known limits states the noreply and OTP choices in place of the agent-decision ids. The judge's two gaps are also closed: a Move order definition says a skipped `move` is not run, not printed and not recorded, and the new S3.8 covers `cmd_watch` with the sender table and states that `watch` has no `--review`.
