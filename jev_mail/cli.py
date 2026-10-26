@@ -28,7 +28,8 @@ def _process_unprocessed(
     *,
     account: MailboxConfig | None = None,
     state: State | None = None,
-) -> None:
+) -> int:
+    """Process one batch; return the number of emails whose classify raised ProviderError."""
     account = account or config.mailbox
     emails = mailbox.fetch_unprocessed(limit=account.max_emails_per_run)
     if len(emails) == account.max_emails_per_run:
@@ -36,8 +37,15 @@ def _process_unprocessed(
             f"[jev-mail] hit max_emails_per_run ({account.max_emails_per_run}) -- "
             "there may be more unprocessed mail left for next run"
         )
+    failed = 0
     for mail in emails:
-        probabilities = classify(client, config, mail.state)
+        try:
+            probabilities = classify(client, config, mail.state)
+        except ProviderError as exc:
+            # Left unmarked on purpose, so the next run retries it (GH-8, Decide 2).
+            print(f"error: email uid {mail.uid}: {exc} -- left unprocessed, will retry next run", file=sys.stderr)
+            failed += 1
+            continue
         matched = matched_categories(config, probabilities)
         applied = []
 
@@ -60,6 +68,7 @@ def _process_unprocessed(
             # The keyword stays the source of truth; the state row is only written after it.
             if state is not None:
                 state.record(f"{account.host}/{account.username}", mail, "jev", probabilities, applied)
+    return failed
 
 
 def _mailbox_error_message(exc: Exception, account: MailboxConfig) -> str:
@@ -91,17 +100,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     state = None
+    failed = 0
     for account in config.accounts:
         try:
             with Mailbox(account) as mailbox:
                 # Opened only after a connection succeeds, and never on a dry run.
                 if state is None and not args.dry_run:
                     state = State(config_path.parent / "state.db")
-                _process_unprocessed(mailbox, client, config, args.dry_run, account=account, state=state)
+                failed += _process_unprocessed(mailbox, client, config, args.dry_run, account=account, state=state)
         except (OSError, imaplib.IMAP4.error) as exc:
             print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
             return 1
-    return 0
+    return 1 if failed else 0
 
 
 def cmd_watch(args: argparse.Namespace) -> int:

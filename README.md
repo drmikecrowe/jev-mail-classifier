@@ -215,9 +215,9 @@ Set **one** of these in `.env` (the wizard writes it for you) -- checked in this
 
 Or set `jev.provider` in `config.yaml` to pin one explicitly instead of auto-detecting.
 
-> The OpenRouter path is live-verified. The TypeSafe-direct and Vercel-gateway adapters
-> are built from their published docs but not yet tested against a live key -- if one of
-> those breaks for you, `jev_mail/providers/` is the one place to look, and pull
+> The OpenRouter and TypeSafe-direct paths are live-verified. The Vercel-gateway adapter
+> is built from its published docs but not yet tested against a live key -- if it
+> breaks for you, `jev_mail/providers/` is the one place to look, and pull
 > requests are very welcome.
 
 ## Development

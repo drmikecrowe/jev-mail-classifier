@@ -334,3 +334,177 @@ def test_dry_run_output_is_unchanged(tmp_path, monkeypatch, capsys):
         "[dry-run] 'Invoice #1': Invoice (0.90) -> move\n"
         "[dry-run] 'Newsletter': no category matched\n"
     )
+
+
+# GH-8: one ProviderError on one email does not abort the run.
+
+from jev_mail.providers import ProviderError  # noqa: E402
+
+PROVIDER_400 = "TypeSafe API request failed: 400 Bad Request"
+ERROR_LINE = f"error: email uid 3: {PROVIDER_400} -- left unprocessed, will retry next run\n"
+
+
+def _invoice_tag_config() -> AppConfig:
+    return AppConfig(
+        mailbox=MailboxConfig(host="imap.example.com", username="me@example.com"),
+        jev=JevSettings(default_threshold=0.6),
+        categories=[Category(name="Invoice", description="Invoice", actions=[Action(type="tag", value="Invoice")])],
+    )
+
+
+def _big_then_invoice() -> list[Email]:
+    return [
+        Email(uid=3, subject="Big", body="b", message_id="<big@example.com>"),
+        Email(uid=2, subject="Invoice #1", body="b", message_id="<ok@example.com>"),
+    ]
+
+
+def _fail_then_invoice():
+    return _fake_client(ProviderError(PROVIDER_400), {"Invoice": 0.9})
+
+
+def test_failing_email_is_reported_and_the_next_is_processed(capsys):
+    """S1.1"""
+    mailbox = MagicMock()
+    mailbox.fetch_unprocessed.return_value = _big_then_invoice()
+
+    failed = cli._process_unprocessed(mailbox, _fail_then_invoice(), _invoice_tag_config(), dry_run=False)
+
+    mailbox.mark_processed.assert_called_once_with(2)
+    mailbox.add_tag.assert_called_once_with(2, "Invoice")
+    assert capsys.readouterr().err == ERROR_LINE
+    assert failed == 1
+
+
+def test_failing_email_gets_no_state_row(tmp_path):
+    """S1.2"""
+    import sqlite3
+
+    from jev_mail.state import State
+
+    mailbox = MagicMock()
+    mailbox.fetch_unprocessed.return_value = _big_then_invoice()
+    config = _invoice_tag_config()
+
+    cli._process_unprocessed(
+        mailbox, _fail_then_invoice(), config, dry_run=False, account=config.mailbox, state=State(tmp_path / "state.db")
+    )
+
+    rows = sqlite3.connect(tmp_path / "state.db").execute("SELECT message_id FROM processed").fetchall()
+    assert rows == [("<ok@example.com>",)]
+
+
+def test_dry_run_reports_failing_email_and_prints_the_others(capsys):
+    """S1.3"""
+    mailbox = MagicMock()
+    mailbox.fetch_unprocessed.return_value = _big_then_invoice()
+
+    failed = cli._process_unprocessed(mailbox, _fail_then_invoice(), _invoice_tag_config(), dry_run=True)
+
+    out, err = capsys.readouterr()
+    assert out == "[dry-run] 'Invoice #1': Invoice (0.90) -> tag\n"
+    assert err == ERROR_LINE
+    mailbox.mark_processed.assert_not_called()
+    assert failed == 1
+
+
+def test_no_failure_returns_zero(capsys):
+    """S1.4"""
+    mailbox = MagicMock()
+    mailbox.fetch_unprocessed.return_value = [Email(uid=2, subject="Invoice #1", body="b")]
+
+    failed = cli._process_unprocessed(mailbox, _fake_client({"Invoice": 0.9}), _invoice_tag_config(), dry_run=False)
+
+    assert failed == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_run_exits_1_when_an_email_failed(tmp_path, monkeypatch):
+    """S2.1"""
+    (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
+    fake = _fake_mailbox_class(_big_then_invoice())
+    monkeypatch.setattr(cli, "Mailbox", fake)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fail_then_invoice())
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    assert fake.marked == [2]
+
+
+def test_run_finishes_every_account_before_exiting_1(tmp_path, monkeypatch):
+    """S2.2"""
+    (tmp_path / "config.yaml").write_text(TWO_ACCOUNTS)
+
+    class FakeMailbox(_fake_mailbox_class([])):
+        def fetch_unprocessed(self, limit=None):
+            uid = len(FakeMailbox.built)
+            return [Email(uid=uid, subject=f"Mail {uid}", body="b")]
+
+    monkeypatch.setattr(cli, "Mailbox", FakeMailbox)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fail_then_invoice())
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    assert [account.host for account in FakeMailbox.built] == ["a.example.com", "b.example.com"]
+    assert FakeMailbox.marked == [2]
+
+
+def test_run_exits_0_when_nothing_failed(tmp_path, monkeypatch):
+    """S2.3"""
+    (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
+    monkeypatch.setattr(cli, "Mailbox", _fake_mailbox_class(_big_then_invoice()))
+    client = MagicMock()
+    client.decide.return_value = {"Invoice": 0.9}
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: client)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 0
+
+
+def test_watch_keeps_going_after_a_failing_email(tmp_path, monkeypatch, capsys):
+    """S3.1"""
+    (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
+    reached = []
+
+    class FakeMailbox(_fake_mailbox_class(_big_then_invoice())):
+        def supports_idle(self):
+            reached.append(True)
+            raise ConnectionResetError("stop the loop")
+
+    monkeypatch.setattr(cli, "Mailbox", FakeMailbox)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fail_then_invoice())
+
+    cli.cmd_watch(_args(tmp_path, "watch"))
+
+    assert FakeMailbox.marked == [2]
+    assert ERROR_LINE in capsys.readouterr().err
+    assert reached == [True]
+
+
+def test_startup_provider_error_still_exits_1_before_any_mailbox(tmp_path, monkeypatch, capsys):
+    """M3"""
+    (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
+    fake = _fake_mailbox_class([])
+    monkeypatch.setattr(cli, "Mailbox", fake)
+
+    def no_key(*a, **k):
+        raise ProviderError("no Jev API key found")
+
+    monkeypatch.setattr(cli, "get_jev_client", no_key)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    assert capsys.readouterr().err == "error: no Jev API key found\n"
+    assert fake.built == []
+
+
+def test_only_provider_error_is_caught_per_email():
+    """M7"""
+    import pytest
+
+    mailbox = MagicMock()
+    mailbox.fetch_unprocessed.return_value = _big_then_invoice()
+    client = _fake_client(RuntimeError("a real bug"), {"Invoice": 0.9})
+
+    with pytest.raises(RuntimeError, match="a real bug"):
+        cli._process_unprocessed(mailbox, client, _invoice_tag_config(), dry_run=False)
+    mailbox.mark_processed.assert_not_called()
