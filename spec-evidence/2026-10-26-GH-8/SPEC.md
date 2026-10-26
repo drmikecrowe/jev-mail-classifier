@@ -2,7 +2,7 @@
 
 ## Summary
 
-This change stops one failing email from aborting the whole run. Today, when the Jev provider raises `ProviderError` for one email (an HTTP 400 such as `max_tokens_exceeded`, a 5xx, a timeout, or a malformed answer), the exception leaves `_process_unprocessed`. `cmd_run` does not catch it, so the run ends with a traceback, and every email after it in that run is skipped. The failing email is never marked, and `fetch_unprocessed` returns the newest mail first, so the next run fails on the same email again (GH-2 `decisions.md` fact 11).
+This change stops one failing email from aborting the whole run. Today, when the Jev provider raises `ProviderError` for one email (an HTTP 400 such as `max_tokens_exceeded`, a 5xx, a timeout, or a malformed answer), the exception leaves `_process_unprocessed`. `cmd_run` does not catch it, so the run ends with a traceback, and every email after it in that run is skipped. The failing email is never marked `$JevProcessed`. `fetch_unprocessed` searches for unmarked mail and returns the newest first, so the next run fetches the same email first again and fails on it again.
 
 What changes: `_process_unprocessed` in `jev_mail/cli.py` catches `ProviderError` for each email. It prints one `error:` line to stderr that names the email's UID and the error, leaves that email unmarked, and goes on to the next email. It returns the number of emails that failed. `cmd_run` exits 1 when any email in any account failed, after it has processed every account. `CLAUDE.md` and `README.md` stop saying that only the OpenRouter adapter is verified, because the TypeSafe-direct adapter answered a live key during the GH-2 build.
 
@@ -61,7 +61,7 @@ What must not change: the existing tests, the dry-run stdout for emails that suc
 
 - M1. Every test in `tests/` that passes at `b29cc70` still passes, with no existing test function changed. Proven by the `tests` layer and `git diff b29cc70 -- tests/` showing added lines only.
 - M2. The dry-run stdout of emails that do not fail is unchanged. Proven by S1.3 and GH-2's `tests/test_cli.py::test_dry_run_output_is_unchanged` (M1).
-- M3. A `ProviderError` from `get_jev_client` at startup (no key, unknown provider) still prints `error:` and exits 1 before any mailbox connects. Proven by a new test in `tests/test_cli.py`.
+- M3. A `ProviderError` from `get_jev_client` at startup (no key, unknown provider) still prints `error:` and exits 1 before any mailbox connects. Proven by a new test in `tests/test_cli.py`: given a valid one-account `config.yaml`, `jev_mail.cli.get_jev_client` replaced with a function that raises `ProviderError("no Jev API key found")`, and `jev_mail.cli.Mailbox` replaced with a fake that records each build, when `cmd_run` runs, then it returns `1`, stderr is exactly `"error: no Jev API key found\n"`, and the fake is never built.
 - M4. A failing email gets no keyword, no action and no state row. Proven by S1.1 and S1.2.
 - M5. No file under `jev_mail/providers/` changes, unless Decide 1 rules otherwise. Proven by `git diff --stat b29cc70 -- jev_mail/providers/`.
 - M6. No new dependency: `pyproject.toml` and `uv.lock` do not change. Proven by `git diff --stat b29cc70 -- pyproject.toml uv.lock` showing nothing.

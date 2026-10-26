@@ -52,3 +52,6 @@ Changes: the first Known limits line cites Decide 2's ruling; no scenario change
 
 ### Revision 1. Decide 1 and 2 ruled
 The engineer ruled A and A in the Decide round; SPEC.md was updated with those rulings.
+
+### Revision 2. Gate 1a round 1 fix
+Finding PR-REFERENT: the Summary now states the newest-first fact itself instead of pointing at GH-2 fact 11. The judge's gap on M3 is also closed: M3 now names its input, the exact stderr text and the exit code.
