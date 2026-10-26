@@ -4,7 +4,7 @@
 
 This change puts the existing IMAP code behind a backend interface, adds a local SQLite record of each processed email, and lets `config.yaml` list more than one account. It prepares Phase 2, which adds Gmail and Graph backends. Today `cli.py` and `actions.py` call the IMAP `Mailbox` class directly, the only record of a processed email is the `$JevProcessed` keyword on the server, and `config.yaml` holds one `mailbox:` block.
 
-What changes: `jev_mail/mailbox.py` becomes the package `jev_mail/mailbox/`, with the interface in `base.py` and the IMAP code in `imap.py`. `Email` gains `message_id`, `sender` and `list_unsubscribe`. A new `jev_mail/state.py` writes one row per processed email to `state.db`. `config.yaml` accepts an `accounts:` list, and `mailbox:` still works as the one-account form.
+What changes: `jev_mail/mailbox.py` becomes the package `jev_mail/mailbox/`, with the interface in `base.py` and the IMAP code in `imap.py`. `Email` gains `message_id`, `sender` and `list_unsubscribe`. A new `jev_mail/state.py` writes one row per processed email to `state.db`. `config.yaml` accepts an `accounts:` list, and `mailbox:` still works as the one-account form. The text sent to Jev holds at most the first 20,000 characters of an email's body, because the build found that a larger email fails the whole run with `max_tokens_exceeded` (Revision 2).
 
 The acceptance criteria, in plain words:
 
@@ -15,18 +15,19 @@ The acceptance criteria, in plain words:
 - The configure wizard edits the first account and writes the other accounts back as they were in the file.
 - A real run writes the keyword and then one state row per email. A dry run writes nothing and creates no `state.db`.
 - `run` processes each account in turn. `watch` with more than one account refuses to start.
-- The dry-run output is byte-identical to today's on fixed inputs, and has the same line count and line shapes on the live mailbox.
+- The dry-run output is byte-identical to today's on fixed inputs. On the live mailbox, the branch run exits 0 and prints only dry-run lines and the cap notice.
+- The text sent to Jev holds the subject and at most the first 20,000 characters of the body. The email itself, the dry-run lines and the webhook payload are unchanged.
 
-What must not change: the existing tests (only three patch targets move), the one-account config file format, the rule that `config.yaml` never holds literal secrets, the provider code, and the dependency list. Unit tests prove every criterion except the live shape check, which the engineer runs by hand and records with counts only. Open decisions: none.
+What must not change: the existing tests (only three patch targets move), the one-account config file format, the rule that `config.yaml` never holds literal secrets, the provider code, and the dependency list. Unit tests prove every criterion except the live check, which the build runs and records with counts only. Open decisions: none.
 
 ## Orientation
 
-- Lane: engineering, because this is an internal refactor with no user-facing behavior change, preparing Phase 2 (Gmail and Graph backends); there is no product author.
+- Lane: engineering, because this is an internal refactor preparing Phase 2 (Gmail and Graph backends), with one behavior change found in build (a body cap so an oversized email no longer fails the run, Decide 5); there is no product author.
 - Change: put the IMAP code behind a `MailBackend` interface, add a SQLite state record beside the keyword, and accept an `accounts:` list in `config.yaml`.
 - Why: Phase 2 needs a second and third backend, a per-email record that is not on the server, and more than one account; the code today has none of the three.
 - Touches: `jev_mail/mailbox/` (new package), `jev_mail/state.py` (new), `jev_mail/actions.py`, `jev_mail/cli.py`, `jev_mail/config.py`, `.gitignore`, tests, `CLAUDE.md`, `README.md`.
 - Decide: the three most likely to be wrong are the state row's account key (`<host>/<username>`), the `uid:<uid>` stand-in for a missing Message-ID, and writing accounts 2 to n back verbatim.
-- Decided: Decide 1 ruled that the three `IMAPClient` patch targets in `tests/test_mailbox.py` change to `jev_mail.mailbox.imap.IMAPClient`; it governs S4.1, M1 and the Touches entry for `tests/test_mailbox.py` (Mike Crowe, 2026-10-25). Decide 2 ruled that `run` processes each account in order and `watch` refuses more than one account; it governs S3.3, S3.4 and the Touches entry for `jev_mail/cli.py` (Mike Crowe, 2026-10-25). Decide 3 ruled that the wizard edits the first account and `save_config` writes accounts 2 to n back from their raw YAML entries; it governs S2.5, S2.6 and the Touches entry for `jev_mail/config.py` (Mike Crowe, 2026-10-25). Decide 4 ruled that the brief's byte-identical check is proven by a golden test and a live line-shape check; it governs S5.1 and S5.2 (Mike Crowe, 2026-10-25).
+- Decided: Decide 1 ruled that the three `IMAPClient` patch targets in `tests/test_mailbox.py` change to `jev_mail.mailbox.imap.IMAPClient`; it governs S4.1, M1 and the Touches entry for `tests/test_mailbox.py` (Mike Crowe, 2026-10-25). Decide 2 ruled that `run` processes each account in order and `watch` refuses more than one account; it governs S3.3, S3.4 and the Touches entry for `jev_mail/cli.py` (Mike Crowe, 2026-10-25). Decide 3 ruled that the wizard edits the first account and `save_config` writes accounts 2 to n back from their raw YAML entries; it governs S2.5, S2.6 and the Touches entry for `jev_mail/config.py` (Mike Crowe, 2026-10-25). Decide 4 ruled that the brief's byte-identical check is proven by a golden test and a live line-shape check; it governs S5.1 and S5.2 (Mike Crowe, 2026-10-25). Decide 5 ruled that the text sent to Jev holds at most the first 20,000 body characters; it governs S6.1, S6.2, M10 and the revised S5.2 (Mike Crowe, 2026-10-25, Revision 2).
 - Brief: issue GH-2. Scope guard: no Gmail or Graph code, no new dependency beyond the standard library.
 - Tier: 2
 - Issue: GH-2
@@ -74,7 +75,12 @@ What must not change: the existing tests (only three patch targets move), the on
 ### S5. Dry-run output
 
 - S5.1 Given a directory with a one-account `config.yaml` holding a category `Invoice` (threshold 0.6, actions `tag` value `Invoice` then `move` folder `Invoices`), `jev_mail.cli.Mailbox` replaced with a fake that returns `Email(uid=2, subject="Invoice #1", body="b")` and `Email(uid=1, subject="Newsletter", body="b")`, and `jev_mail.cli.get_jev_client` replaced with a fake whose `decide` returns `{"Invoice": 0.9}` and then `{"Invoice": 0.1}`, when `cmd_run` runs with `--dry-run`, then stdout equals exactly `"[dry-run] 'Invoice #1': Invoice (0.90) -> tag\n[dry-run] 'Invoice #1': Invoice (0.90) -> move\n[dry-run] 'Newsletter': no category matched\n"`. The same test passes at `e393a22` (with `Email` built from `jev_mail.mailbox`) and on the branch.
-- S5.2 Given the engineer's live `config.yaml` with `max_emails_per_run: 5`, when the engineer runs `./jev-mail run --dry-run` once at `e393a22` and once on the branch, then both exit 0, both print the same number of lines, every line is a dry-run line or the cap notice `[jev-mail] hit max_emails_per_run (5) ...`, the unprocessed count is the same before and after each run, and no `state.db` exists after either run. EVIDENCE.md records the commands, exit codes, line counts and counts only, with no subject, address or body.
+- S5.2 Given the engineer's live `config.yaml` with `max_emails_per_run: 5`, when `jev-mail run --dry-run` runs once at `e393a22` and once on the branch, then the branch run exits 0 and prints 5 dry-run lines or more plus the cap notice `[jev-mail] hit max_emails_per_run (5) ...`, every line of either run is a dry-run line or that cap notice, the unprocessed count is the same before and after each run, and no `state.db` exists after either run. The `e393a22` run is recorded with its exit code and line count; when it exits 1, the recorded cause is `max_tokens_exceeded`. EVIDENCE.md records the commands, exit codes, line counts and counts only, with no subject, address or body. (Revised in Revision 2: before the cap, both runs exit 1 on the same oversized email.)
+
+### S6. The text sent to Jev is capped
+
+- S6.1 Given `Email(uid=1, subject="s", body="a" * 20_000 + "TAIL")`, when `mail.state` is read, then it equals `"Subject: s\n\n" + "a" * 20_000`, and `mail.body` still ends with `"TAIL"`.
+- S6.2 (boundary) Given `Email(uid=1, subject="s", body="b" * 20_000)`, when `mail.state` is read, then it equals `"Subject: s\n\n" + "b" * 20_000`.
 
 ## Must NOT
 
@@ -87,19 +93,20 @@ What must not change: the existing tests (only three patch targets move), the on
 - M7. No new dependency: `pyproject.toml` and `uv.lock` do not change. Proven by `git diff --stat e393a22 -- pyproject.toml uv.lock` showing nothing.
 - M8. `Email(uid=..., subject=..., body=...)` still constructs with keywords; the new fields come after `body` with default `""`. Proven by S1.5 and M1.
 - M9. No commit holds `state.db`, `config.yaml`, `.env`, or a real subject, address or body; `.gitignore` gains `state.db` in the commit that adds `jev_mail/state.py`. Proven by the `secrets` layer and by `git check-ignore state.db`.
+- M10. The cap changes only the text sent to Jev: `Email.body`, the dry-run lines and the webhook payload are unchanged. Proven by S6.1, S5.1 and `tests/test_actions.py::test_run_action_webhook_posts_json` (M1).
 
 ## Touches
 
 - `jev_mail/mailbox.py`: removed; its content moves to `jev_mail/mailbox/imap.py`.
 - `jev_mail/mailbox/__init__.py`: new; re-exports `PROCESSED_KEYWORD`, `Email`, `Mailbox`, `MailBackend`.
-- `jev_mail/mailbox/base.py`: new; `Email` (with `message_id`, `sender`, `list_unsubscribe`, default `""`) and the `MailBackend` `typing.Protocol` with the six methods of S1.2.
+- `jev_mail/mailbox/base.py`: new; `Email` (with `message_id`, `sender`, `list_unsubscribe`, default `""`, and a `state` that holds at most the first 20,000 body characters) and the `MailBackend` `typing.Protocol` with the six methods of S1.2.
 - `jev_mail/mailbox/imap.py`: new; `PROCESSED_KEYWORD`, `Mailbox` and its helpers from `jev_mail/mailbox.py`; `fetch_unprocessed` fills the three new `Email` fields.
 - `jev_mail/state.py`: new; `State(path)` opens `state.db` with `sqlite3`, creates the `processed` table if missing, and `record(account_key, mail, source, probabilities, actions)` upserts one state row.
 - `jev_mail/actions.py`: `run_action` takes a `MailBackend` instead of a `Mailbox`; dispatch is unchanged.
 - `jev_mail/cli.py`: `_process_unprocessed` gains keyword arguments `account` (default `config.mailbox`) and `state` (default `None`), uses `account.max_emails_per_run`, and after `mark_processed` calls `state.record` when `state` is set; `cmd_run` opens `State(<dir>/state.db)` only when not `--dry-run` and runs each account in `config.accounts` in its own `Mailbox`; `cmd_watch` refuses more than one account; `_mailbox_error_message` names the failing account's host and port.
 - `jev_mail/config.py`: `AppConfig` gains `extra_accounts: list[MailboxConfig]` and `extra_accounts_raw: list[dict]` (both default empty) and an `accounts` property (`[mailbox, *extra_accounts]`); `load_config` reads either `mailbox:` or `accounts:`, applies the same interpolation and checks to each account, and refuses both or an empty list; `save_config` writes `mailbox:` when there are no extra accounts, and otherwise `accounts:` with the first account as `mailbox:` is written today followed by `extra_accounts_raw` verbatim.
 - `.gitignore`: adds `state.db`.
-- `tests/test_mailbox.py`: three patch targets (Decide 1); S1.4, S1.5.
+- `tests/test_mailbox.py`: three patch targets (Decide 1); S1.4, S1.5, S6.1, S6.2.
 - `tests/test_actions.py`: S1.3.
 - `tests/test_config.py`: S2.1 to S2.6.
 - `tests/test_cli.py`: S3.1 to S3.4, S5.1.
@@ -120,12 +127,13 @@ What must not change: the existing tests (only three patch targets move), the on
 - `state.db` is a record only in this phase. Nothing reads it, and a failed state write stops the run after that email's keyword is already set, so that email has no state row.
 - A missing Message-ID falls back to `uid:<uid>`, which is unique only within one folder of one account.
 - S5.2 compares line counts and shapes, not bytes, because provider answers vary between runs.
+- The cap is in characters, not tokens. 20,000 characters stay under the measured 28,429 to about 38,000 token limit unless the body averages more than about 1.6 tokens per character. A longer email is classified on its first 20,000 body characters only.
 
 ## Verification contract
 
 | Layer | What it gates | Threshold |
 |---|---|---|
-| tests | S1.1 to S3.6, S5.1, M1 to M5, M8 | `mise exec -- uv run pytest -q` exits 0 |
+| tests | S1.1 to S3.6, S5.1, S6.1, S6.2, M1 to M5, M8, M10 | `mise exec -- uv run pytest -q` exits 0 |
 | secrets | M9 for committed content | `mise exec gitleaks@8.30.1 -- gitleaks git --no-banner .` reports no leak |
 | diff reading | S4.1, M6, M7 | the `git diff` commands in S4.1, M6, M7 show only the allowed lines |
 | live run | S5.2 | recorded in EVIDENCE.md with counts only |

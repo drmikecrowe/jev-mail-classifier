@@ -21,6 +21,7 @@
 8. `jev_mail/tui/app.py` and `jev_mail/tui/screens/mailbox_screen.py` read and write `config.mailbox` only.
 9. `.gitignore` at `e393a22` has no `state.db` entry.
 10. The provider answers are model output, so two live dry runs over the same mail can print different probabilities. The brief's live "byte-identical" check therefore cannot be proven by a live run.
+11. Found in build, while running S5.2: the live dry run exits 1 at `e393a22` and at `ca7e032` alike, with a `ProviderError` from `TypeSafeDirectClient.decide`. The API answers HTTP 400 with `{"detail": {"error_type": "max_tokens_exceeded"}}` for 2 of the 5 newest unprocessed emails (bodies of 104,964 and 122,085 characters); bodies of 7,370 and 30,650 characters return 200. Synthetic text returns 200 at 28,429 input tokens and 400 at about 38,000, so the limit is on tokens, most likely 32,768. The key, the request shape and the live category all return 200 on a synthetic email. Verified with requests that printed only status codes, lengths and the error's `error_type`.
 
 ## Restatements
 
@@ -71,7 +72,21 @@ Evidence: fact 10; `jev_mail/cli.py` prints the dry-run lines.
 Default: A. Ruling: B (Mike Crowe, 2026-10-25).
 Changes: S5.1 (golden test) and S5.2 (live shape check).
 
+### Decide 5. How does the run keep an oversized email from failing it with `max_tokens_exceeded`?
+
+Evidence: fact 11; `jev_mail/mailbox/base.py::Email.state` sends the whole body.
+
+- A. `Email.state` holds at most the first 20,000 body characters. Cost: the tail of a long email is not classified, and a body averaging more than about 1.6 tokens per character can still exceed the limit.
+- B. Catch `ProviderError` per email, print it, leave the email unmarked and continue. Cost: that email is retried and re-billed on every run and is never classified.
+- C. A and B. Cost: the most new code, and two more scenarios.
+
+Default: A. Ruling: A (Mike Crowe, 2026-10-25).
+Changes: S6.1, S6.2, M10, the revised S5.2, the Lane reason, the Summary, the Touches entries for `base.py` and `tests/test_mailbox.py`, a Known limits line, and the `tests` row of the Verification contract.
+
 ## Revisions
 
 ### Revision 1. Decide 1 to 4 ruled
 The engineer ruled A, A, B, B in the Decide round; SPEC.md was written with those rulings.
+
+### Revision 2. Body cap added in build (Decide 5)
+The S5.2 live run failed on both commits with `max_tokens_exceeded` (fact 11). The engineer asked for the cause to be triaged, then chose to revise this SPEC rather than open a separate issue. S5.2 now requires the branch run to exit 0 and records the `e393a22` run's exit code and cause. S6 and M10 are new. The Lane reason now names the one behavior change.
