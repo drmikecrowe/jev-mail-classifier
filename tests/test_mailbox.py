@@ -224,3 +224,20 @@ def test_missing_headers_are_empty_strings():
     assert (mail.message_id, mail.sender, mail.list_unsubscribe) == ("", "", "")
     bare = Email(uid=1, subject="x", body="y")
     assert (bare.message_id, bare.sender, bare.list_unsubscribe) == ("", "", "")
+
+
+def test_state_sends_at_most_20000_body_characters():
+    """S6.1"""
+    from jev_mail.mailbox import Email
+
+    mail = Email(uid=1, subject="s", body="a" * 20_000 + "TAIL")
+
+    assert mail.state == "Subject: s\n\n" + "a" * 20_000
+    assert mail.body.endswith("TAIL")
+
+
+def test_state_keeps_a_body_of_exactly_20000_characters():
+    """S6.2"""
+    from jev_mail.mailbox import Email
+
+    assert Email(uid=1, subject="s", body="b" * 20_000).state == "Subject: s\n\n" + "b" * 20_000

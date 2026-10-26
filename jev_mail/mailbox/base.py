@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+# Jev rejects input over its token limit (measured between 28k and 38k tokens,
+# GH-2 decisions.md fact 11) with max_tokens_exceeded, failing the whole run.
+MAX_STATE_BODY_CHARS = 20_000
+
 
 @dataclass
 class Email:
@@ -15,7 +19,7 @@ class Email:
 
     @property
     def state(self) -> str:
-        return f"Subject: {self.subject}\n\n{self.body}"
+        return f"Subject: {self.subject}\n\n{self.body[:MAX_STATE_BODY_CHARS]}"
 
 
 class MailBackend(Protocol):
