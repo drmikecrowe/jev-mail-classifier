@@ -12,3 +12,5 @@ work/
 /gauntlet-stamp.json
 .env.schema
 state.db
+senders.csv
+sender-census.csv

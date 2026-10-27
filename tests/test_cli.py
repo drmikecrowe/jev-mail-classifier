@@ -508,3 +508,337 @@ def test_only_provider_error_is_caught_per_email():
     with pytest.raises(RuntimeError, match="a real bug"):
         cli._process_unprocessed(mailbox, client, _invoice_tag_config(), dry_run=False)
     mailbox.mark_processed.assert_not_called()
+
+
+# GH-3: Tier 0 decides known senders and obvious bulk mail before Jev.
+
+import csv  # noqa: E402
+import json  # noqa: E402
+import sqlite3  # noqa: E402
+from unittest.mock import call  # noqa: E402
+
+import pytest  # noqa: E402
+
+from jev_mail.state import State  # noqa: E402
+
+DEALS_TABLE = {"deals@example.com": "unsubscribe"}
+ACCOUNT_KEY = "imap.example.com/user@example.com"
+
+
+def _moving(*names: str) -> list[Category]:
+    return [Category(name=n, description=n, actions=[Action(type="move", folder=n)]) for n in names]
+
+
+def _gh3_config(categories: list[Category]) -> AppConfig:
+    return AppConfig(
+        mailbox=MailboxConfig(host="imap.example.com", username="user@example.com"),
+        jev=JevSettings(default_threshold=0.6),
+        categories=categories,
+    )
+
+
+def _deals_then_invoice() -> list[Email]:
+    return [
+        Email(uid=3, subject="Weekly deals", body="b", message_id="<d@example.com>", sender="Deals <deals@example.com>"),
+        Email(uid=2, subject="Invoice #1", body="b", message_id="<i@example.com>", sender="ann@example.com"),
+    ]
+
+
+def _answering(answer: dict) -> MagicMock:
+    client = MagicMock()
+    client.decide.return_value = answer
+    return client
+
+
+def _billing_bulk_client() -> MagicMock:
+    return _answering({"BILLING": 0.9, "BULK": 0.1})
+
+
+def _mailbox(emails: list[Email]) -> MagicMock:
+    mailbox = MagicMock()
+    mailbox.fetch_unprocessed.return_value = emails
+    return mailbox
+
+
+def _state_rows(db) -> dict:
+    rows = sqlite3.connect(db).execute("SELECT message_id, source, probabilities, actions FROM processed").fetchall()
+    return {m: (source, json.loads(p), json.loads(a)) for m, source, p, a in rows}
+
+
+def test_census_hit_skips_jev_and_the_state_row_records_its_source(tmp_path):
+    """GH-3 S3.1"""
+    mailbox = _mailbox(_deals_then_invoice())
+    client = _billing_bulk_client()
+    config = _gh3_config(_moving("BILLING", "BULK"))
+
+    cli._process_unprocessed(
+        mailbox, client, config, dry_run=False, account=config.mailbox, state=State(tmp_path / "state.db"), senders=DEALS_TABLE
+    )
+
+    client.decide.assert_called_once()
+    assert client.decide.call_args.args[0] == _deals_then_invoice()[1].state
+    assert mailbox.move.call_args_list == [call(3, "BULK"), call(2, "BILLING")]
+    assert mailbox.mark_processed.call_args_list == [call(3), call(2)]
+    rows = _state_rows(tmp_path / "state.db")
+    assert {m: row[:2] for m, row in rows.items()} == {
+        "<d@example.com>": ("census", {"BULK": 1.0}),
+        "<i@example.com>": ("jev", {"BILLING": 0.9, "BULK": 0.1}),
+    }
+
+
+def test_heuristic_hit_skips_jev_and_records_heuristic(tmp_path):
+    """GH-3 S3.2"""
+    mail = Email(
+        uid=4, subject="Sale", body="b", message_id="<s@example.com>", sender="shop@example.com", list_unsubscribe="<mailto:u@example.com>"
+    )
+    client = _billing_bulk_client()
+    config = _gh3_config(_moving("BILLING", "BULK"))
+
+    cli._process_unprocessed(
+        _mailbox([mail]), client, config, dry_run=False, account=config.mailbox, state=State(tmp_path / "state.db"), senders={}
+    )
+
+    client.decide.assert_not_called()
+    assert [row[0] for row in _state_rows(tmp_path / "state.db").values()] == ["heuristic"]
+
+
+def test_dry_run_line_shows_the_tier0_source(capsys):
+    """GH-3 S3.3"""
+    config = _gh3_config(_moving("BILLING", "BULK"))
+
+    cli._process_unprocessed(_mailbox(_deals_then_invoice()), _billing_bulk_client(), config, dry_run=True, senders=DEALS_TABLE)
+
+    assert capsys.readouterr().out == (
+        "[dry-run] 'Weekly deals': BULK (census) -> move\n" "[dry-run] 'Invoice #1': BILLING (0.90) -> move\n"
+    )
+
+
+def test_tier0_webhook_carries_probability_one(monkeypatch):
+    """GH-3 S3.4"""
+    import jev_mail.actions as actions
+
+    posted = []
+    monkeypatch.setattr(actions.httpx, "post", lambda url, json, timeout: posted.append((url, json)))
+    config = _gh3_config([Category(name="BULK", description="Bulk", actions=[Action(type="webhook", url="https://hooks.example.com/x")])])
+    mail = Email(uid=4, subject="Sale", body="b", list_unsubscribe="<mailto:u@example.com>")
+
+    cli._process_unprocessed(_mailbox([mail]), MagicMock(), config, dry_run=False, senders={})
+
+    assert posted == [("https://hooks.example.com/x", {"category": "BULK", "probability": 1.0, "subject": "Sale"})]
+
+
+def _tag_and_move_billing_then_bulk() -> AppConfig:
+    billing = Category(
+        name="BILLING", description="Bills", actions=[Action(type="tag", value="Billing"), Action(type="move", folder="BILLING")]
+    )
+    return _gh3_config([billing, *_moving("BULK")])
+
+
+def _invoice_from_ann() -> Email:
+    return Email(uid=2, subject="Invoice #1", body="b", message_id="<i@example.com>", sender="ann@example.com")
+
+
+def test_only_the_first_matched_move_runs(tmp_path):
+    """GH-3 S3.5"""
+    mailbox = _mailbox([_invoice_from_ann()])
+    config = _tag_and_move_billing_then_bulk()
+
+    cli._process_unprocessed(
+        mailbox,
+        _answering({"BILLING": 0.9, "BULK": 0.9}),
+        config,
+        dry_run=False,
+        account=config.mailbox,
+        state=State(tmp_path / "state.db"),
+        senders={},
+    )
+
+    mailbox.add_tag.assert_called_once_with(2, "Billing")
+    mailbox.move.assert_called_once_with(2, "BILLING")
+    assert _state_rows(tmp_path / "state.db")["<i@example.com>"][2] == [
+        {"category": "BILLING", "type": "tag", "value": "Billing"},
+        {"category": "BILLING", "type": "move", "folder": "BILLING"},
+    ]
+
+
+def test_dry_run_prints_no_line_for_a_skipped_move(capsys):
+    """GH-3 S3.6"""
+    cli._process_unprocessed(
+        _mailbox([_invoice_from_ann()]),
+        _answering({"BILLING": 0.9, "BULK": 0.9}),
+        _tag_and_move_billing_then_bulk(),
+        dry_run=True,
+        senders={},
+    )
+
+    assert capsys.readouterr().out == (
+        "[dry-run] 'Invoice #1': BILLING (0.90) -> tag\n" "[dry-run] 'Invoice #1': BILLING (0.90) -> move\n"
+    )
+
+
+def test_tier0_hit_is_marked_when_jev_fails_for_the_others(capsys):
+    """GH-3 S3.7"""
+    mailbox = _mailbox(_deals_then_invoice())
+    client = MagicMock()
+    client.decide.side_effect = ProviderError("boom")
+
+    failed = cli._process_unprocessed(
+        mailbox, client, _gh3_config(_moving("BILLING", "BULK")), dry_run=False, senders=DEALS_TABLE
+    )
+
+    mailbox.mark_processed.assert_called_once_with(3)
+    assert failed == 1
+
+
+def test_a_matched_category_without_move_lets_a_later_move_run():
+    """GH-3 S3.9"""
+    action = Category(name="ACTION", description="Act", actions=[Action(type="flag")])
+    mailbox = _mailbox([Email(uid=2, subject="Call me", body="b", message_id="<c@example.com>", sender="ann@example.com")])
+
+    cli._process_unprocessed(
+        mailbox, _answering({"ACTION": 0.9, "BULK": 0.9}), _gh3_config([action, *_moving("BULK")]), dry_run=False, senders={}
+    )
+
+    mailbox.set_flag.assert_called_once_with(2, True)
+    mailbox.move.assert_called_once_with(2, "BULK")
+
+
+GH3_YAML = (
+    "mailbox:\n  host: imap.example.com\n  username: user@example.com\n"
+    "senders_file: senders.csv\n"
+    "categories:\n"
+    "  BILLING:\n    description: Bills\n    actions:\n      - type: move\n        folder: BILLING\n"
+    "  BULK:\n    description: Bulk\n    actions:\n      - type: move\n        folder: BULK\n"
+)
+
+
+def _gh3_dir(tmp_path, *, senders: bool = True):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "config.yaml").write_text(GH3_YAML)
+    if senders:
+        (project / "senders.csv").write_text("sender,verdict\ndeals@example.com,unsubscribe\n")
+    return project
+
+
+def _recording_mailbox(emails: list[Email]):
+    class FakeMailbox(_fake_mailbox_class(emails)):
+        moved: list[tuple[int, str]] = []
+
+        def move(self, uid, folder):
+            FakeMailbox.moved.append((uid, folder))
+
+    return FakeMailbox
+
+
+def test_missing_senders_file_stops_the_run_before_any_mailbox(tmp_path, monkeypatch, capsys):
+    """GH-3 S2.6"""
+    project = _gh3_dir(tmp_path, senders=False)
+    fake = _fake_mailbox_class([])
+    monkeypatch.setattr(cli, "Mailbox", fake)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _billing_bulk_client())
+
+    assert cli.cmd_run(_args(project, "run")) == 1
+
+    assert capsys.readouterr().err == f"error: senders file not found: {project}/senders.csv\n"
+    assert fake.built == []
+
+
+def test_watch_uses_the_sender_table_and_has_no_review_option(tmp_path, monkeypatch):
+    """GH-3 S3.8"""
+    project = _gh3_dir(tmp_path)
+
+    class FakeMailbox(_recording_mailbox(_deals_then_invoice())):
+        def supports_idle(self):
+            raise ConnectionResetError("stop the loop")
+
+    client = _billing_bulk_client()
+    monkeypatch.setattr(cli, "Mailbox", FakeMailbox)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: client)
+
+    cli.cmd_watch(_args(project, "watch"))
+
+    client.decide.assert_called_once()
+    assert client.decide.call_args.args[0] == _deals_then_invoice()[1].state
+    assert (3, "BULK") in FakeMailbox.moved
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(["watch", "--review", "x.csv"])
+    assert exc.value.code == 2
+
+
+def _review_run(tmp_path, monkeypatch, client, *argv: str):
+    project = _gh3_dir(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    fake = _fake_mailbox_class(_deals_then_invoice())
+    monkeypatch.setattr(cli, "Mailbox", fake)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: client)
+    paths = {"outside": str(outside / "review.csv"), "inside": str(project / "review.csv")}
+    code = cli.cmd_run(_args(project, "run", *(paths.get(a, a) for a in argv)))
+    return code, project, outside, fake
+
+
+def _review_rows(path) -> list[list[str]]:
+    with open(path, newline="") as f:
+        return list(csv.reader(f))
+
+
+def test_review_csv_has_one_row_per_email_with_source_and_probabilities(tmp_path, monkeypatch):
+    """GH-3 S4.1"""
+    code, _, outside, _ = _review_run(tmp_path, monkeypatch, _billing_bulk_client(), "--dry-run", "--review", "outside")
+
+    assert code == 0
+    assert _review_rows(outside / "review.csv") == [
+        ["account", "uid", "subject", "source", "BILLING", "BULK"],
+        [ACCOUNT_KEY, "3", "Weekly deals", "census", "", "1.0"],
+        [ACCOUNT_KEY, "2", "Invoice #1", "jev", "0.9", "0.1"],
+    ]
+
+
+def test_review_is_refused_without_dry_run(tmp_path, monkeypatch, capsys):
+    """GH-3 S4.2"""
+    code, _, outside, fake = _review_run(tmp_path, monkeypatch, _billing_bulk_client(), "--review", "outside")
+
+    assert code == 1
+    assert capsys.readouterr().err == "error: --review needs --dry-run\n"
+    assert fake.built == []
+    assert not (outside / "review.csv").exists()
+
+
+def test_review_is_refused_inside_the_project_directory(tmp_path, monkeypatch, capsys):
+    """GH-3 S4.3"""
+    code, project, _, fake = _review_run(tmp_path, monkeypatch, _billing_bulk_client(), "--dry-run", "--review", "inside")
+
+    assert code == 1
+    assert capsys.readouterr().err == (
+        f"error: --review path must be outside {project.resolve()} -- its rows hold real subjects\n"
+    )
+    assert fake.built == []
+    assert not (project / "review.csv").exists()
+
+
+def test_review_csv_has_no_row_for_a_failed_email(tmp_path, monkeypatch):
+    """GH-3 S4.4"""
+    client = _fake_client(ProviderError("boom"))
+    code, _, outside, _ = _review_run(tmp_path, monkeypatch, client, "--dry-run", "--review", "outside")
+
+    assert code == 1
+    assert _review_rows(outside / "review.csv") == [
+        ["account", "uid", "subject", "source", "BILLING", "BULK"],
+        [ACCOUNT_KEY, "3", "Weekly deals", "census", "", "1.0"],
+    ]
+
+
+def test_review_defaults_to_none(tmp_path, monkeypatch):
+    """GH-3 S4.5"""
+    assert cli.build_parser().parse_args(["run"]).review is None
+
+    (tmp_path / "config.yaml").write_text(GH3_YAML)
+    seen = {}
+    monkeypatch.setattr(cli, "cmd_run", lambda args: seen.setdefault("review", args.review) or 0)
+    monkeypatch.setattr(cli.sys, "argv", ["jev-mail", "--dir", str(tmp_path)])
+    monkeypatch.setattr(cli.sys, "exit", lambda code: None)
+
+    cli.main()
+
+    assert "review" in seen and seen["review"] is None

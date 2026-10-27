@@ -78,6 +78,8 @@ class AppConfig:
     # so save_config writes these back from their raw ${VAR} entries.
     extra_accounts: list[MailboxConfig] = field(default_factory=list)
     extra_accounts_raw: list[dict] = field(default_factory=list)
+    # The Tier 0 sender table, relative to the config directory; "" means no table.
+    senders_file: str = ""
 
     @property
     def accounts(self) -> list[MailboxConfig]:
@@ -145,6 +147,7 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         categories=categories,
         extra_accounts=extra_accounts,
         extra_accounts_raw=extra_accounts_raw,
+        senders_file=str(raw.get("senders_file") or ""),
     )
 
 
@@ -191,6 +194,7 @@ def save_config(config: AppConfig, config_path: str | Path) -> None:
             "provider": config.jev.provider,
             "default_threshold": config.jev.default_threshold,
         },
+        **({"senders_file": config.senders_file} if config.senders_file else {}),
         "categories": {
             cat.name: {
                 "description": cat.description,

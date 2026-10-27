@@ -163,6 +163,18 @@ matching category runs. Processed mail is marked with a private IMAP keyword
 (`$JevProcessed`), which stays the source of truth. A real run also writes a local
 record of each processed email to `state.db` beside `config.yaml`; a dry run writes nothing.
 
+Before Jev, a local **Tier 0** step tries four rules in order, and the first that fires
+gives the email one category and **skips the Jev call**:
+
+1. The sender is in your sender table (`senders_file`): `unsubscribe` gives `BULK`,
+   `auto-archive` gives `MONITOR`. A `keep` sender skips the other rules and always goes to Jev.
+2. A one-time-code subject ("verification code", "2FA", ...) gives `MONITOR`.
+3. A `List-Unsubscribe` header gives `BULK`.
+4. A `noreply@`, `no-reply@` or `donotreply@` sender gives `MONITOR`.
+
+A rule whose category is not in your config does not fire. The `state.db` row records
+which path decided: `census`, `heuristic` or `jev`.
+
 ## Config, if you'd rather skip the TUI
 
 `config.yaml` (see [`config.example.yaml`](config.example.yaml)) is plain and hand-editable:
@@ -192,6 +204,19 @@ through your Jev quota or a run taking forever the first time you point this at 
 inbox. If a run hits the cap, it prints a notice and picks up the rest next time.
 "Unprocessed" means missing the `$JevProcessed` keyword, not `\Seen`/unread -- opening
 an email doesn't skip it. When capped, the newest unprocessed mail is classified first.
+
+`senders_file: senders.csv` (optional, relative to `config.yaml`) names the Tier 0 sender
+table: a CSV with `sender` and `verdict` columns, each verdict `unsubscribe`,
+`auto-archive` or `keep` (see [`senders.example.csv`](senders.example.csv)). It is
+git-ignored. A missing file, an unknown verdict or a sender listed twice stops the run.
+
+When several matched categories have a `move` action, only the first `move` in
+`categories:` order runs; a matched category with no `move` does not block a later one.
+Every other action runs for every match.
+
+`jev-mail run --dry-run --review <path>` writes one CSV row per email with its decision
+source and every category's probability, for tuning thresholds. The path must be
+outside the project directory, because the rows hold real subjects.
 
 | Action        | What it does                                   |
 | ------------- | ----------------------------------------------- |

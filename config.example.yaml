@@ -16,25 +16,42 @@ jev:
   provider: auto # auto | typesafe | openrouter | vercel
   default_threshold: 0.6
 
-categories:
-  invoice:
-    description: "Invoice, billing statement, or payment request"
-    actions:
-      - type: tag
-        value: Invoice
-      - type: move
-        folder: Invoices
+# Tier 0 sender table (git-ignored): known senders are decided locally,
+# without a Jev call. See senders.example.csv for the format.
+# senders_file: senders.csv
 
-  urgent:
-    description: "Time-sensitive, needs action today"
+# Categories are independent yes/no questions, so one email can match several.
+# Only the first `move` among the matched categories, in the order below, runs;
+# every other action runs for every match. A bill that is also bulk mail goes to BILLING.
+categories:
+  BILLING:
+    description: "Invoice, bill, receipt, billing statement, or payment request"
+    actions:
+      - type: move
+        folder: BILLING
+
+  ACTION:
+    description: "Needs a reply or a task from me"
     threshold: 0.7 # overrides jev.default_threshold for this category
     actions:
       - type: flag
       - type: webhook
         url: ${SLACK_WEBHOOK_URL}
 
-  spam:
-    description: "Spam, phishing, or an unsolicited sales pitch"
+  PERSONAL:
+    description: "Written by a person to me, needing no action"
+    actions:
+      - type: tag
+        value: PERSONAL
+
+  MONITOR:
+    description: "Automated notice to keep an eye on: alert, shipping update, one-time code"
     actions:
       - type: move
-        folder: Spam
+        folder: MONITOR
+
+  BULK:
+    description: "Mass mail: newsletter, marketing, promotion, or mailing list"
+    actions:
+      - type: move
+        folder: BULK

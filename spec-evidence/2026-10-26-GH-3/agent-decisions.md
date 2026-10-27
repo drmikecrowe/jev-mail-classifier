@@ -54,3 +54,13 @@
 - Other option: a regex for any 4 to 8 digit number in the subject.
 - Why: a bare number also matches order numbers and invoice numbers, which must reach Jev for `BILLING`.
 - Command: hotfix
+
+### A12. The `move` that runs belongs to the first matched category with a `move`, taken in `config.categories` order, while every other action keeps the order it runs in today
+- Other option: sort the matched categories into config order and run every action in that order.
+- Why: `matched_categories` returns Jev's answer order, so sorting would reorder today's actions and dry-run lines for emails with no Tier 0 hit (M2), while picking only the move owner by config order changes nothing else.
+- Command: build
+
+### A13. The example categories take their descriptions from the epic #7 taxonomy revision, and only BILLING, MONITOR and BULK move
+- Other option: give every one of the five a `move` to its own folder, as the SPEC's test configs do.
+- Why: the revision says ACTION needs a reply or task and PERSONAL is a human with no action, so both stay in the inbox (ACTION keeps its flag and webhook, PERSONAL gets a tag), while bills, receipts and mass mail leave it.
+- Command: build

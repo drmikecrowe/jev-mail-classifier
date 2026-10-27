@@ -28,10 +28,11 @@ mise exec -- uv run pytest tests/test_config.py::test_name   # one test
 Pipeline per email (`jev_mail/cli.py::_process_unprocessed`):
 
 1. `Mailbox.fetch_unprocessed` (`jev_mail/mailbox/imap.py`, behind the `MailBackend` Protocol in `jev_mail/mailbox/base.py`) searches IMAP for `UNKEYWORD $JevProcessed`, newest first, capped at the account's `max_emails_per_run`. "Unprocessed" is the keyword, not `\Seen`. The keyword is the source of truth; `state.db` (`state.py`, beside `config.yaml`) is a local record written after each keyword, and nothing reads it yet.
-2. `classify` (`classify.py`) sends every category to Jev in a **single** `decide()` call. Each category is an independent yes/no ("noul") question, so results are multi-label.
-3. `matched_categories` compares each probability against the category's `threshold`, falling back to `jev.default_threshold`.
-4. `run_action` (`actions.py`) dispatches on `Action.type` to `Mailbox` primitives or an `httpx.post` webhook.
-5. The email is marked `$JevProcessed` even when nothing matched, so it is never re-billed. `--dry-run` skips both actions and marking.
+2. `tier0.decide` (`tier0.py`) tries four local rules in order: the sender table (`senders_file`), a one-time-code subject, a `List-Unsubscribe` header, a noreply sender. The first hit gives one category with probability 1.0, source `census` or `heuristic`, and skips Jev. A `keep` sender, or no hit, goes to step 3 with source `jev`. A rule whose category is not configured does not fire.
+3. `classify` (`classify.py`) sends every category to Jev in a **single** `decide()` call. Each category is an independent yes/no ("noul") question, so results are multi-label.
+4. `matched_categories` compares each probability against the category's `threshold`, falling back to `jev.default_threshold`. It returns Jev's answer order, not config order.
+5. `run_action` (`actions.py`) dispatches on `Action.type` to `Mailbox` primitives or an `httpx.post` webhook. Only the first `move` among the matched categories, in `config.categories` order, runs; every other action runs for every match.
+6. The email is marked `$JevProcessed` even when nothing matched, so it is never re-billed, and the state row records the source. `--dry-run` skips both actions and marking. `run --dry-run --review <path>` writes one CSV row per email, and refuses a path inside `--dir`.
 
 **Providers** (`jev_mail/providers/`): `JevClient` is a Protocol with one method, `decide(state, {name: description}) -> {name: probability}`. `get_jev_client` picks a backend from the `_BACKENDS` tuple, in priority order `TYPESAFE_API_KEY` > `OPENROUTER_API_KEY` > `AI_GATEWAY_API_KEY`, unless `jev.provider` pins one. Shared helpers in `base.py` build the questions payload (`build_noul_questions`) and normalize answers (`extract_probabilities` accepts either a `noul` or a `boolean` key, because Vercel answers with `boolean`). The OpenRouter and TypeSafe-direct adapters are verified against a live key. The Vercel adapter is built from docs only.
 
@@ -40,6 +41,7 @@ Pipeline per email (`jev_mail/cli.py::_process_unprocessed`):
 - `${VAR}` interpolation is applied only to `mailbox.host`, `username`, and `password`. Action fields (for example a webhook `url`) are not interpolated.
 - `save_config` always writes `${IMAP_USERNAME}` / `${IMAP_PASSWORD}`, never the literal values.
 - `config.yaml` holds either one `mailbox:` block or an `accounts:` list, never both. `AppConfig.mailbox` is the first account; accounts 2 to n are written back from their raw entries. `run` processes each account in turn; `watch` refuses more than one.
+- `senders_file` (top level, relative to the config directory) names the git-ignored Tier 0 sender table; `""` means none. `save_config` writes it only when set. `tier0.load_senders` raises `ConfigError` for a missing file, an unknown verdict or a duplicate sender, so `run` and `watch` stop before any mailbox connects.
 - `save_env` merges: an empty value **deletes** that key. The credentials screen pre-fills from the existing `.env`, so a cleared field means "remove it".
 
 **TUI** (`jev_mail/tui/`, Textual): `JevMailConfigApp` chains three screens: Credentials (writes `.env`, has a "Test key" button) -> Mailbox -> Categories (with `CategoryEditScreen` as a modal). Each screen dismisses with its data, and callbacks on the app (`_after_credentials`, `_after_mailbox`, `_after_categories`) wire it into `self.config` before `save_config`. All CSS lives in the `CSS` string in `app.py`.

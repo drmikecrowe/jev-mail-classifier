@@ -377,3 +377,45 @@ def test_wizard_edit_keeps_other_accounts_as_written(tmp_path, monkeypatch):
     assert second == yaml.safe_load(TWO_ACCOUNTS_YAML)["accounts"][1]
     for literal in ("new@example.com", "pw", *TWO_ACCOUNTS_ENV.values()):
         assert literal not in text, literal
+
+
+# GH-3: the senders_file key and the shipped example config.
+
+
+def _creds(monkeypatch):
+    monkeypatch.setenv("IMAP_USERNAME", "me@example.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "secret")
+
+
+def test_senders_file_key_loads_and_defaults_to_empty(tmp_path, monkeypatch):
+    """GH-3 S2.5"""
+    _creds(monkeypatch)
+
+    assert _load(tmp_path, "senders_file: senders.csv\n" + ONE_ACCOUNT_YAML).senders_file == "senders.csv"
+    assert _load(tmp_path, ONE_ACCOUNT_YAML).senders_file == ""
+
+
+def test_senders_file_round_trips_and_is_omitted_when_empty(tmp_path, monkeypatch):
+    """GH-3 S2.7"""
+    _creds(monkeypatch)
+    out = tmp_path / "out.yaml"
+
+    save_config(_load(tmp_path, "senders_file: senders.csv\n" + ONE_ACCOUNT_YAML), out)
+    assert load_config(out, env_path=tmp_path / "does-not-exist.env").senders_file == "senders.csv"
+
+    save_config(_load(tmp_path, ONE_ACCOUNT_YAML), out)
+    assert "senders_file" not in out.read_text()
+
+
+def test_example_config_ships_the_five_categories(monkeypatch):
+    """GH-3 S5.1"""
+    from pathlib import Path
+
+    _creds(monkeypatch)
+    example = Path(__file__).resolve().parent.parent / "config.example.yaml"
+
+    config = load_config(example, env_path=example.parent / "does-not-exist.env")
+
+    assert [c.name for c in config.categories] == ["BILLING", "ACTION", "PERSONAL", "MONITOR", "BULK"]
+    assert next(c for c in config.categories if c.name == "ACTION").threshold == 0.7
+    assert config.senders_file == ""
