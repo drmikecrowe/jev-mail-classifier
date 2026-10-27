@@ -14,7 +14,7 @@ The acceptance criteria, in plain words:
 - A bad table (missing file, unknown verdict, a sender listed twice) stops the run with one `error:` line before any mailbox connects.
 - The state row says `census`, `heuristic` or `jev`. A Tier 0 hit records probability 1.0 for its category.
 - A dry run shows the source on a Tier 0 line in place of the probability. Jev lines print as they do today.
-- Only the first matched category in config order moves an email. Tags, flags and mark actions still run for every match.
+- Only the first `move` among the matched categories, in config order, runs. A matched category with no `move` does not stop a later one from moving the email. Tags, flags and mark actions still run for every match.
 - `--review <path>` writes the CSV. It is refused without `--dry-run`, and refused for a path inside the project directory, because its rows hold real subjects.
 - `senders.csv` and `sender-census.csv` are git-ignored, and a `senders.example.csv` with fake rows is committed.
 - On a 200-message live sample, the review CSV gives the count for each source. The Jev count is lower than Phase 0's 200 calls on the same sample.
@@ -31,8 +31,8 @@ Open decisions: none. Decide 1 ruled that only a Tier 0 dry-run line shows its s
 - Change: add a local Tier 0 decision before the Jev call, record its source, give the first matched `move` priority, add `--review`, and ship the shared taxonomy in the example config.
 - Why: every email costs one Jev call today, even when a hand-made table or an obvious header already answers it.
 - Touches: `jev_mail/tier0.py` (new), `jev_mail/cli.py`, `jev_mail/config.py`, `config.example.yaml`, `senders.example.csv` (new), `.gitignore`, `README.md`, `CLAUDE.md`, and tests.
-- Decide: Decide 1, the dry-run line for a Tier 0 hit; Decide 2, the example categories.
-- Decided: Decide 1 ruled that a Tier 0 dry-run line prints its source in place of the probability and Jev lines stay as they are; it governs S3.3 (Mike Crowe, 2026-10-26). Decide 2 ruled that the five categories replace `invoice`, `urgent` and `spam` in `config.example.yaml`, with `ACTION` keeping `threshold: 0.7` and the `webhook`; it governs S5.1 and the `config.example.yaml` Touches entry (Mike Crowe, 2026-10-26).
+- Decide: Decide 1, the dry-run line for a Tier 0 hit; Decide 2, the example categories; Decide 3, whether a later matched category may move the email.
+- Decided: Decide 1 ruled that a Tier 0 dry-run line prints its source in place of the probability and Jev lines stay as they are; it governs S3.3 (Mike Crowe, 2026-10-26). Decide 2 ruled that the five categories replace `invoice`, `urgent` and `spam` in `config.example.yaml`, with `ACTION` keeping `threshold: 0.7` and the `webhook`; it governs S5.1 and the `config.example.yaml` Touches entry (Mike Crowe, 2026-10-26). Decide 3 ruled that a matched category with no `move` lets the next matched category's `move` run; it governs the Move order definition and S3.9 (Mike Crowe, 2026-10-27).
 - Brief: issue GH-3, its three decision comments of 2026-10-25, and the taxonomy revision comment on epic #7 of 2026-10-25. Where a later comment supersedes an earlier one, the later one is the spec.
 - Tier: 2
 - Issue: GH-3
@@ -52,7 +52,7 @@ Open decisions: none. Decide 1 ruled that only a Tier 0 dry-run line shows its s
   4. Noreply sender: `MONITOR`, source `heuristic`.
   A rule whose category name is not one of `config.categories` does not fire, and the next rule is tried. When no rule fires, there is no decision.
 - **Tier 0 hit**: `tier0.decide(mail, senders, config)` returns `(category, source)`, with `category` the configured `Category` of that name. No decision returns `None`.
-- **Move order**: for one email, the first `move` action of the first matched category in `config.categories` order runs. Every later `move` is skipped: it does not run, a dry run prints no line for it, and it is not in the state row's actions. Every other action type runs for every matched category.
+- **Move order**: for one email, the first `move` action found among the matched categories, taken in `config.categories` order, runs, even when an earlier matched category has no `move` (Decide 3). Every later `move` is skipped: it does not run, a dry run prints no line for it, and it is not in the state row's actions. Every other action type runs for every matched category.
 - **Account key**: `f"{account.host}/{account.username}"`, as `state.record` already uses.
 
 ## Scenarios
@@ -91,8 +91,8 @@ The configs below name categories by their exact names. "All five" means `BILLIN
 - S3.5 Given a config with `BILLING` (actions: `tag` value `Billing`, then `move` to `BILLING`) and `BULK` (action: `move` to `BULK`), an empty table, one email `Email(uid=2, subject="Invoice #1", body="b", message_id="<i@example.com>", sender="ann@example.com")`, which has no Tier 0 hit, and a client that returns `{"BILLING": 0.9, "BULK": 0.9}`, when `_process_unprocessed` runs with `dry_run=False` and a `State`, then `add_tag` is called once with `Billing`, `move` is called once, with `BILLING`, and the state row's actions are `[{"category": "BILLING", "type": "tag", "value": "Billing"}, {"category": "BILLING", "type": "move", "folder": "BILLING"}]`.
 - S3.6 (boundary) Given the S3.5 inputs, when `_process_unprocessed` runs with `dry_run=True`, then stdout is exactly `[dry-run] 'Invoice #1': BILLING (0.90) -> tag`, `[dry-run] 'Invoice #1': BILLING (0.90) -> move`, each with a newline, and nothing for `BULK`.
 - S3.7 (boundary) Given the S3.1 inputs and a client whose `decide` always raises `ProviderError("boom")`, when `_process_unprocessed` runs with `dry_run=False`, then `mark_processed` is called with `3` only, and the call returns `1`.
-
 - S3.8 Given a one-account `config.yaml` that holds `senders_file: senders.csv`, a `senders.csv` with the line `deals@example.com,unsubscribe` under a `sender,verdict` header, the S3.1 categories, `jev_mail.cli.Mailbox` replaced with a fake that returns the S3.1 emails and whose `supports_idle` raises `ConnectionResetError` to end the loop after the first pass, and `jev_mail.cli.get_jev_client` replaced with the S3.1 client, when `cmd_watch` runs, then `decide` is called once, with the state of uid 2, and `move` is called with `(3, "BULK")`. `watch` has no `--review` option: `build_parser().parse_args(["watch", "--review", "x.csv"])` exits with status 2.
+- S3.9 (boundary) Given a config with `ACTION` (action: `flag`) then `BULK` (action: `move` to `BULK`), in that order, an empty table, one email `Email(uid=2, subject="Call me", body="b", message_id="<c@example.com>", sender="ann@example.com")`, which has no Tier 0 hit, and a client that returns `{"ACTION": 0.9, "BULK": 0.9}`, when `_process_unprocessed` runs with `dry_run=False`, then `set_flag` is called once with `(2, True)` and `move` is called once with `(2, "BULK")` (Decide 3, Mike Crowe, 2026-10-27).
 
 ### S4. The review CSV
 
@@ -133,7 +133,7 @@ The configs below name categories by their exact names. "All five" means `BILLIN
 - `senders.example.csv`: new; a `sender,verdict` header and one fake `example.com` row per verdict.
 - `.gitignore`: `senders.csv` and `sender-census.csv`.
 - `tests/test_tier0.py`: new; S1.1 to S1.10, S2.1 to S2.4, S5.2.
-- `tests/test_cli.py`: S2.6, S3.1 to S3.8, S4.1 to S4.5.
+- `tests/test_cli.py`: S2.6, S3.1 to S3.9, S4.1 to S4.5.
 - `tests/test_config.py`: S2.5, S2.7, S5.1.
 - `README.md`, `CLAUDE.md`: as S5.4 says.
 - `spec-evidence/2026-10-26-GH-3/EVIDENCE.md` (in build): the S5.3 and S5.4 readings, the M5 to M7 diff readings, and the S6.1 counts.
@@ -151,6 +151,7 @@ The configs below name categories by their exact names. "All five" means `BILLIN
 - The `From` header is not authenticated. A spoofed `From` of a table sender gets that sender's verdict. A spoofed `keep` sender only goes to Jev.
 - The `--review` check refuses paths inside `--dir` only. A path inside some other repository is allowed.
 - `senders.csv` is git-ignored, so git does not back it up.
+- An email that Jev scores as both `ACTION` and `BULK` is flagged and then moved to `BULK`, out of the inbox, because `ACTION` has no `move` (Decide 3).
 
 ## Verification contract
 

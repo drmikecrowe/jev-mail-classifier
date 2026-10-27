@@ -57,6 +57,16 @@ Evidence: fact 8; brief step 4 says "Add categories"; epic #7 calls the five "th
 Default: A. Ruling: A (Mike Crowe, 2026-10-26).
 Changes: S5.1 and the `config.example.yaml` Touches entry cite Decide 2's ruling; the Orientation's Decided line names it.
 
+### Decide 3. When the first matched category has no `move`, may a later matched category move the email?
+
+Evidence: the round-2 Gate 1a gap; GH-3's third decision comment, "when several matched categories have a `move` action, the first match in `categories:` config order owns the move"; the example order puts `ACTION` (no `move`) ahead of `MONITOR` and `BULK`.
+
+- A. Only the first matched category may move; when it has no `move`, nothing moves. Cost: a matched `BULK` or `MONITOR` email stays in the inbox whenever `ACTION` or `PERSONAL` also matched.
+- B. The first `move` among the matched categories, in config order, runs. Cost: an email Jev scores as both `ACTION` and `BULK` is flagged and moved to `BULK`, out of the inbox.
+
+Default: B. Ruling: B (Mike Crowe, 2026-10-27).
+Changes: the Move order definition, the matching Summary criterion, the Orientation's Decided line, the new S3.9, the `tests/test_cli.py` Touches entry and one Known limits line.
+
 ## Revisions
 
 ### Revision 1. Decide 1 and 2 ruled
@@ -64,3 +74,6 @@ The engineer ruled A and A in the Decide round; SPEC.md was updated with those r
 
 ### Revision 2. Gate 1a round 1 fix
 Finding PR-REFERENT: the Touches entry for `config.example.yaml` now writes out the category order, and Known limits states the noreply and OTP choices in place of the agent-decision ids. The judge's two gaps are also closed: a Move order definition says a skipped `move` is not run, not printed and not recorded, and the new S3.8 covers `cmd_watch` with the sender table and states that `watch` has no `--review`.
+
+### Revision 3. Decide 3 ruled after Gate 1a
+The engineer ruled that a matched category with no `move` does not block a later matched category's `move`, closing the round-2 gap. Gate 1a graded the text before this revision.
