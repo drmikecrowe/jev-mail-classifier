@@ -55,9 +55,12 @@ Evidence: the issue body's step 3, "moving to a folder = applying that label and
 - B. Add an `archive` action type. Cost: `ACTION_TYPES`, `Action.to_dict`, `run_action`, the IMAP backend and the TUI checklist all change.
 
 Default: A. Ruling: A (Mike Crowe, 2026-10-27).
-Changes: S2.3 and S2.4.
+Changes: S2.3, S2.4 and S2.5.
 
 ## Revisions
 
 ### Revision 1. Plan switched from IMAP to the Gmail API
 The brief file holds only the issue body, which plans IMAP; the issue's final comment drops IMAP. The engineer confirmed the Gmail API plan before drafting, and Decide 1 to 3 were ruled before the first Gate 1a round.
+
+### Revision 2. Gate 1a round 1: `move` to a missing label
+Gate 1a found that S2.3 did not say what `move` does when the target label does not exist. Decide 3's ruling already says the label is created when missing, so a new S2.4 states that, and the later S2 scenarios are renumbered S2.5 to S2.8.
