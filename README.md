@@ -208,7 +208,8 @@ an email doesn't skip it. When capped, the newest unprocessed mail is classified
 `senders_file: senders.csv` (optional, relative to `config.yaml`) names the Tier 0 sender
 table: a CSV with `sender` and `verdict` columns, each verdict `unsubscribe`,
 `auto-archive` or `keep` (see [`senders.example.csv`](senders.example.csv)). It is
-git-ignored. A missing file, an unknown verdict or a sender listed twice stops the run.
+git-ignored. A missing file, an unknown verdict, a sender listed twice or a sender that is
+not an email address stops the run.
 
 When several matched categories have a `move` action, only the first `move` in
 `categories:` order runs; a matched category with no `move` does not block a later one.
