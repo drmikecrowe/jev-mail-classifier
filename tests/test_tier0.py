@@ -149,6 +149,24 @@ def test_load_senders_refuses_a_header_without_sender(tmp_path):
     assert str(exc.value) == "senders.csv: the header row needs the columns sender and verdict"
 
 
+@pytest.mark.parametrize("value", ["deals@", "<>", "a@b@example.com"])
+def test_load_senders_refuses_a_sender_that_is_no_address(tmp_path, value):
+    """GH-3 adversary round 1: a row must never be stored under the empty address."""
+    path = _senders(tmp_path, "sender,verdict", "a@example.com,keep", f"{value},unsubscribe")
+
+    with pytest.raises(ConfigError) as exc:
+        tier0.load_senders(path)
+    assert str(exc.value) == f"senders.csv line 3: {value!r} is not an email address"
+
+
+@pytest.mark.parametrize("sender", ["", "a@b@example.com"])
+def test_email_without_a_sender_address_never_matches_the_table(sender):
+    """GH-3 adversary round 1: an empty or malformed From goes on to the other rules, not to a table row."""
+    mail = Email(uid=1, subject="Hi", body="b", sender=sender)
+
+    assert tier0.decide(mail, {"": "unsubscribe"}, _config(*FIVE)) is None
+
+
 def test_example_senders_file_holds_only_fake_addresses():
     """S5.2"""
     table = tier0.load_senders(REPO / "senders.example.csv")

@@ -64,3 +64,8 @@
 - Other option: give every one of the five a `move` to its own folder, as the SPEC's test configs do.
 - Why: the revision says ACTION needs a reply or task and PERSONAL is a human with no action, so both stay in the inbox (ACTION keeps its flag and webhook, PERSONAL gets a tag), while bills, receipts and mass mail leave it.
 - Command: build
+
+### A14. A table row whose sender parses to no address stops the run, and an email whose sender parses to no address never matches the table
+- Other option: skip such a row silently, as a row with an empty sender is skipped.
+- Why: adversary round 1 showed a row such as `deals@` is stored under the key `''`, which every email with an empty or malformed `From` then matches; a hand-edited typo must stop the run (A5), and the lookup guard keeps a From-less email out of the table whatever the file holds.
+- Command: build

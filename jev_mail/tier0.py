@@ -44,6 +44,8 @@ def load_senders(path: str | Path) -> dict[str, str]:
                     f"{path.name} line {reader.line_num}: unknown verdict {verdict!r} (use unsubscribe, auto-archive or keep)"
                 )
             sender = sender_address(raw_sender)
+            if not sender:
+                raise ConfigError(f"{path.name} line {reader.line_num}: {raw_sender!r} is not an email address")
             if sender in table:
                 raise ConfigError(f"{path.name} line {reader.line_num}: {sender} is listed twice")
             table[sender] = verdict
@@ -53,7 +55,8 @@ def load_senders(path: str | Path) -> dict[str, str]:
 def decide(mail: Email, senders: dict[str, str], config: AppConfig) -> tuple[Category, str] | None:
     """The first Tier 0 rule that fires, as (category, source); None sends the email to Jev."""
     address = sender_address(mail.sender)
-    verdict = senders.get(address)
+    # An empty or malformed From parses to "", which must never match a table row.
+    verdict = senders.get(address) if address else None
     if verdict == "keep":
         return None
     local, at, _ = address.partition("@")
