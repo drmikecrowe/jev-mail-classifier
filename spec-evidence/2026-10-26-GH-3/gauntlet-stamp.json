@@ -1,0 +1,31 @@
+{
+  "result": "green",
+  "mode": "full",
+  "expected_layers": [
+    "tests",
+    "secrets"
+  ],
+  "completed_layers": [
+    "tests",
+    "secrets"
+  ],
+  "layer_seconds": {
+    "tests": 11.226,
+    "secrets": 0.751
+  },
+  "layers": {
+    "tests": {
+      "baseline": "none",
+      "selection": "off"
+    },
+    "secrets": {
+      "baseline": "none",
+      "selection": "off"
+    }
+  },
+  "failed": null,
+  "exit_code": 0,
+  "commit": "9ccdad7d6b355a1aa185e071d95424c4396eb530",
+  "dirty": true,
+  "written": "2026-10-27T12:55:02.928Z"
+}
