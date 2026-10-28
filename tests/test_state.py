@@ -32,3 +32,13 @@ def test_recording_the_same_email_again_replaces_its_row(tmp_path):
     assert len(rows) == 1
     assert rows[0][:2] == ("a", "<m@example.com>")
     assert json.loads(rows[0][2]) == {"X": 0.1}
+
+
+def test_gmail_string_uid_falls_back_as_uid_prefix(tmp_path):
+    """GH-4 S6.1"""
+    from jev_mail.state import State
+
+    state = State(tmp_path / "state.db")
+    state.record("a", Email(uid="b2", subject="s", body="b"), "jev", {}, [])
+
+    assert [row[1] for row in _rows(tmp_path / "state.db")] == ["uid:b2"]

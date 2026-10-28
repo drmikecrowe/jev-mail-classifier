@@ -122,6 +122,25 @@ IMAP host and port (almost always `993`), and, if 2FA is on, an app-specific pas
 generated the same way. If 2FA is off, your regular email password usually works, but
 an app password is safer since it can be revoked without changing your main password.
 
+### Gmail API
+
+Over IMAP, a Gmail `tag` is a keyword that the Gmail web UI never shows. With the Gmail API backend, a `tag` is a real Gmail label. It needs no app password.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Gmail API** for it.
+2. Under **Google Auth Platform**, set up the consent screen as **External** and add your Gmail address as a **test user**.
+3. Create an OAuth client of type **Desktop app**, download its JSON, and save it as `client_secrets.json` beside `config.yaml`.
+4. Run `./jev-mail auth-gmail` once. It opens a browser for the sign-in and saves `gmail-token.json` beside `config.yaml`, readable by you only. Both files are git-ignored; never commit them.
+5. In `config.yaml`, give the account `backend: gmail`. It needs no host or password:
+
+```yaml
+mailbox:
+  backend: gmail
+  username: you@gmail.com
+  folder: INBOX
+```
+
+On Gmail, `tag` adds a label of that name, and creates it when it does not exist. `move` adds the folder's label and takes the mail out of the inbox; `move` to `[Gmail]/All Mail` only archives it. `flag` stars the mail, and `mark_read` / `mark_unread` change its unread state. Processed mail gets the `JevProcessed` label. `watch` polls a Gmail account every `poll_interval_seconds`, because the Gmail API has no IDLE. One config directory holds one Gmail account, and the wizard cannot set one up: write `backend: gmail` by hand.
+
 ## What it looks like
 
 `jev-mail configure` is a three-step terminal UI:

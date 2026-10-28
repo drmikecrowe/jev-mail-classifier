@@ -60,5 +60,6 @@ class MailboxScreen(Screen[MailboxConfig]):
                 max_emails_per_run=int(self.query_one("#max_emails_per_run", Input).value or 25),
                 tls=self._mailbox.tls,
                 tls_ca_file=self._mailbox.tls_ca_file,
+                backend=self._mailbox.backend,
             )
         )

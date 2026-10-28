@@ -227,3 +227,33 @@ categories:
     written = config_path.read_text()
     assert "tls: starttls" in written
     assert "tls_ca_file: /tmp/bridge.pem" in written
+
+
+async def test_wizard_keeps_the_gmail_backend(tmp_path):
+    """GH-4 S3.5"""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    env_path.write_text("IMAP_USERNAME=me@example.com\n")
+    config_path.write_text(
+        """
+mailbox:
+  backend: gmail
+  username: ${IMAP_USERNAME}
+categories:
+  invoice:
+    description: Invoice
+"""
+    )
+    app = JevMailConfigApp(config_path, env_path, load_config(config_path, env_path))
+
+    async with app.run_test(size=(100, 60)) as pilot:
+        await pilot.pause()
+        await pilot.click("#continue")  # credentials, fields unchanged
+        await pilot.pause()
+        await pilot.click("#continue")  # mailbox, no field changed
+        await pilot.pause()
+        await pilot.press("s")  # categories: Save & exit
+
+    import yaml
+
+    assert yaml.safe_load(config_path.read_text())["mailbox"]["backend"] == "gmail"

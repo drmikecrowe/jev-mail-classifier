@@ -419,3 +419,55 @@ def test_example_config_ships_the_five_categories(monkeypatch):
     assert [c.name for c in config.categories] == ["BILLING", "ACTION", "PERSONAL", "MONITOR", "BULK"]
     assert next(c for c in config.categories if c.name == "ACTION").threshold == 0.7
     assert config.senders_file == ""
+
+
+MIXED_ACCOUNTS_YAML = """
+accounts:
+  - host: imap.example.com
+    username: u
+    password: p
+  - backend: gmail
+    username: me@example.com
+categories:
+  invoice:
+    description: Invoice
+"""
+
+
+def test_accounts_mix_imap_and_gmail(tmp_path):
+    """GH-4 S3.1"""
+    config = _load(tmp_path, MIXED_ACCOUNTS_YAML)
+
+    imap, gmail = config.accounts
+    assert imap.backend == "imap"
+    assert (gmail.backend, gmail.host) == ("gmail", "gmail.googleapis.com")
+
+
+def test_unknown_backend_is_rejected(tmp_path):
+    """GH-4 S3.2"""
+    with pytest.raises(ConfigError, match="imap, gmail"):
+        _load(tmp_path, "mailbox:\n  backend: pop3\n  host: imap.example.com\ncategories:\n  invoice:\n    description: I\n")
+
+
+def test_no_backend_and_no_host_is_still_the_empty_host_error(tmp_path):
+    """GH-4 S3.3"""
+    with pytest.raises(ConfigError, match=r"mailbox\.host is empty"):
+        _load(tmp_path, "mailbox:\n  username: u\ncategories:\n  invoice:\n    description: I\n")
+
+
+def test_save_writes_backend_only_for_gmail(tmp_path, monkeypatch):
+    """GH-4 S3.4"""
+    _creds(monkeypatch)
+    out = tmp_path / "out.yaml"
+
+    save_config(_load(tmp_path, "mailbox:\n  backend: gmail\n  username: me@example.com\ncategories:\n  invoice:\n    description: I\n"), out)
+    assert yaml_mailbox(out)["backend"] == "gmail"
+
+    save_config(_load(tmp_path, ONE_ACCOUNT_YAML), out)
+    assert "backend" not in yaml_mailbox(out)
+
+
+def yaml_mailbox(path) -> dict:
+    import yaml
+
+    return yaml.safe_load(path.read_text())["mailbox"]

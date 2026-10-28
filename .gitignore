@@ -14,3 +14,5 @@ work/
 state.db
 senders.csv
 sender-census.csv
+client_secrets.json
+gmail-token.json

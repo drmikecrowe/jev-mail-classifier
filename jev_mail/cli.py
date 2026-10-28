@@ -12,7 +12,8 @@ from jev_mail import tier0
 from jev_mail.actions import run_action
 from jev_mail.classify import classify, matched_categories
 from jev_mail.config import AppConfig, ConfigError, MailboxConfig, load_config
-from jev_mail.mailbox import MailBackend, Mailbox
+from jev_mail.mailbox import GmailError, GmailMailbox, MailBackend, Mailbox
+from jev_mail.mailbox.gmail import authorize_gmail
 from jev_mail.providers import ProviderError, get_jev_client
 from jev_mail.providers.base import JevClient
 from jev_mail.state import State
@@ -105,7 +106,15 @@ def _process_unprocessed(
     return failed
 
 
+def _open_mailbox(account: MailboxConfig, config_dir: Path):
+    return GmailMailbox(account, config_dir) if account.backend == "gmail" else Mailbox(account)
+
+
 def _mailbox_error_message(exc: Exception, account: MailboxConfig) -> str:
+    if isinstance(exc, ConfigError):
+        return str(exc)
+    if isinstance(exc, GmailError):
+        return f"Gmail API error for {account.username} -- {exc}"
     if isinstance(exc, OSError):
         return f"couldn't connect to {account.host}:{account.port} -- {exc}"
     return f"IMAP error talking to {account.host} -- {exc}"
@@ -151,14 +160,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         failed = 0
         for account in config.accounts:
             try:
-                with Mailbox(account) as mailbox:
+                with _open_mailbox(account, config_path.parent) as mailbox:
                     # Opened only after a connection succeeds, and never on a dry run.
                     if state is None and not args.dry_run:
                         state = State(config_path.parent / "state.db")
                     failed += _process_unprocessed(
                         mailbox, client, config, args.dry_run, account=account, state=state, senders=senders, review=review
                     )
-            except (OSError, imaplib.IMAP4.error) as exc:
+            except (OSError, imaplib.IMAP4.error, ConfigError, GmailError) as exc:
                 print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
                 return 1
     return 1 if failed else 0
@@ -179,7 +188,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
     print(f"watching {config.mailbox.folder}@{config.mailbox.host} (ctrl-c to stop)...")
     try:
-        with Mailbox(config.mailbox) as mailbox:
+        with _open_mailbox(config.mailbox, config_path.parent) as mailbox:
             state = None if args.dry_run else State(config_path.parent / "state.db")
             _process_unprocessed(mailbox, client, config, args.dry_run, state=state, senders=senders)
             while True:
@@ -190,9 +199,19 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 else:
                     time.sleep(config.mailbox.poll_interval_seconds)
                 _process_unprocessed(mailbox, client, config, args.dry_run, state=state, senders=senders)
-    except (OSError, imaplib.IMAP4.error) as exc:
+    except (OSError, imaplib.IMAP4.error, ConfigError, GmailError) as exc:
         print(f"error: {_mailbox_error_message(exc, config.mailbox)}", file=sys.stderr)
         return 1
+
+
+def cmd_auth_gmail(args: argparse.Namespace) -> int:
+    try:
+        token = authorize_gmail(Path(args.dir))
+    except (ConfigError, GmailError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"saved the Gmail token to {token}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -209,6 +228,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser = subparsers.add_parser("watch", help="keep classifying new mail as it arrives")
     watch_parser.add_argument("--dry-run", action="store_true", help="classify and print, without applying any action")
 
+    subparsers.add_parser("auth-gmail", help="sign in to Gmail once and save the token beside config.yaml")
+
     return parser
 
 
@@ -222,7 +243,7 @@ def main() -> None:
             args.dry_run = False
             args.review = None
 
-    commands = {"configure": cmd_configure, "run": cmd_run, "watch": cmd_watch}
+    commands = {"configure": cmd_configure, "run": cmd_run, "watch": cmd_watch, "auth-gmail": cmd_auth_gmail}
     sys.exit(commands[args.command](args))
 
 

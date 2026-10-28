@@ -842,3 +842,147 @@ def test_review_defaults_to_none(tmp_path, monkeypatch):
     cli.main()
 
     assert "review" in seen and seen["review"] is None
+
+
+GMAIL_YAML = "mailbox:\n  backend: gmail\n  username: me@example.com\n" + INVOICE_CATEGORIES
+
+
+class _FakeFlow:
+    built_with: tuple = ()
+
+    @classmethod
+    def from_client_secrets_file(cls, path, scopes):
+        cls.built_with = (path, scopes)
+        return cls()
+
+    def run_local_server(self, port):
+        assert port == 0
+        return MagicMock(to_json=lambda: '{"token": "t"}')
+
+
+def test_auth_gmail_writes_an_owner_only_token(tmp_path, monkeypatch, capsys):
+    """GH-4 S4.1"""
+    import stat
+
+    import google_auth_oauthlib.flow
+
+    (tmp_path / "client_secrets.json").write_text("{}")
+    monkeypatch.setattr(google_auth_oauthlib.flow, "InstalledAppFlow", _FakeFlow)
+
+    assert cli.cmd_auth_gmail(_args(tmp_path, "auth-gmail")) == 0
+
+    token = tmp_path / "gmail-token.json"
+    assert _FakeFlow.built_with == (str(tmp_path / "client_secrets.json"), ["https://www.googleapis.com/auth/gmail.modify"])
+    assert token.read_text() == '{"token": "t"}'
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
+    out = capsys.readouterr().out
+    assert str(token) in out
+    assert '"token": "t"' not in out
+
+
+def test_auth_gmail_without_client_secrets_names_the_file(tmp_path, capsys):
+    """GH-4 S4.2"""
+    assert cli.cmd_auth_gmail(_args(tmp_path, "auth-gmail")) == 1
+
+    err = capsys.readouterr().err
+    assert str(tmp_path / "client_secrets.json") in err
+    assert "Desktop OAuth client" in err
+    assert "Gmail API" in err
+    assert not (tmp_path / "gmail-token.json").exists()
+
+
+def test_run_without_a_gmail_token_names_auth_gmail(tmp_path, monkeypatch, capsys):
+    """GH-4 S4.3"""
+    import googleapiclient.discovery
+
+    (tmp_path / "config.yaml").write_text(GMAIL_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+    build = MagicMock()
+    monkeypatch.setattr(googleapiclient.discovery, "build", build)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    assert capsys.readouterr().err == f"error: no Gmail token at {tmp_path}/gmail-token.json -- run `jev-mail auth-gmail`\n"
+    build.assert_not_called()
+
+
+def test_run_reports_a_gmail_error_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """GH-4 S4.5"""
+    from jev_mail.mailbox import GmailError
+
+    (tmp_path / "config.yaml").write_text(GMAIL_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+
+    class FailingGmail:
+        def __init__(self, account, config_dir):
+            pass
+
+        def __enter__(self):
+            raise GmailError("invalid_grant")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(cli, "GmailMailbox", FailingGmail)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    assert capsys.readouterr().err == "error: Gmail API error for me@example.com -- invalid_grant\n"
+
+
+def test_run_opens_the_backend_each_account_names(tmp_path, monkeypatch):
+    """GH-4 S5.1"""
+    (tmp_path / "config.yaml").write_text(
+        "accounts:\n  - host: imap.example.com\n  - backend: gmail\n    username: me@example.com\n" + INVOICE_CATEGORIES
+    )
+    imap = _fake_mailbox_class([])
+    entered = []
+
+    class FakeGmail(_fake_mailbox_class([])):
+        built_with: list = []
+
+        def __init__(self, account, config_dir):
+            FakeGmail.built_with.append((account, config_dir))
+
+        def __enter__(self):
+            entered.append("gmail")
+            return self
+
+    monkeypatch.setattr(cli, "Mailbox", imap)
+    monkeypatch.setattr(cli, "GmailMailbox", FakeGmail)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+
+    assert cli.cmd_run(_args(tmp_path, "run", "--dry-run")) == 0
+
+    assert [(a.backend, a.host) for a in imap.built] == [("imap", "imap.example.com")]
+    assert [(a.backend, d) for a, d in FakeGmail.built_with] == [("gmail", tmp_path)]
+    assert entered == ["gmail"]
+
+
+def test_watch_polls_a_gmail_account(tmp_path, monkeypatch):
+    """GH-4 S5.2"""
+    (tmp_path / "config.yaml").write_text(GMAIL_YAML.replace("username:", "poll_interval_seconds: 7\n  username:"))
+    slept = []
+
+    class FakeGmail(_fake_mailbox_class([])):
+        def __init__(self, account, config_dir):
+            pass
+
+        def supports_idle(self):
+            return False
+
+        def idle(self):
+            raise AssertionError("idle on Gmail")
+
+    def fake_sleep(seconds):
+        slept.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "GmailMailbox", FakeGmail)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_watch(_args(tmp_path, "watch", "--dry-run"))
+
+    assert slept == [7]

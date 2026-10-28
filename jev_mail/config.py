@@ -12,6 +12,8 @@ _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 ACTION_TYPES = ("tag", "move", "flag", "unflag", "mark_read", "mark_unread", "webhook")
 TLS_MODES = ("ssl", "starttls")
+BACKENDS = ("imap", "gmail")
+GMAIL_HOST = "gmail.googleapis.com"
 
 
 class ConfigError(Exception):
@@ -61,6 +63,7 @@ class MailboxConfig:
     max_emails_per_run: int = 25
     tls: str = "ssl"
     tls_ca_file: str = ""
+    backend: str = "imap"
 
 
 @dataclass
@@ -162,7 +165,12 @@ def _load_account(mb_raw: dict, env: dict, label: str) -> MailboxConfig:
         max_emails_per_run=int(mb_raw.get("max_emails_per_run", 25)),
         tls=mb_raw.get("tls", "ssl"),
         tls_ca_file=mb_raw.get("tls_ca_file", ""),
+        backend=mb_raw.get("backend", "imap"),
     )
+    if mailbox.backend not in BACKENDS:
+        raise ConfigError(f"{label}.backend must be one of {', '.join(BACKENDS)}, got {mailbox.backend!r}")
+    if mailbox.backend == "gmail" and not mailbox.host:
+        mailbox.host = GMAIL_HOST
     if mailbox.tls not in TLS_MODES:
         raise ConfigError(f"{label}.tls must be one of {', '.join(TLS_MODES)}, got {mailbox.tls!r}")
     if not mailbox.host:
@@ -174,6 +182,7 @@ def save_config(config: AppConfig, config_path: str | Path) -> None:
     """Writes config.yaml. Mailbox credentials are always written as ${VAR}
     references, never as literal secrets, regardless of what's loaded in memory."""
     mailbox = {
+        **({"backend": config.mailbox.backend} if config.mailbox.backend != "imap" else {}),
         "host": config.mailbox.host,
         "port": config.mailbox.port,
         "username": "${IMAP_USERNAME}",
