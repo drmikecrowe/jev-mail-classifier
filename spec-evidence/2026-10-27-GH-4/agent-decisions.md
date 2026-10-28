@@ -39,3 +39,13 @@
 - Other option: leave the screen as it is and list the lost key as a known limit.
 - Why: the screen already carries `tls` the same way, and without it one wizard save silently turns a Gmail account into an IMAP account with no usable host.
 - Command: hotfix
+
+### A9. An uncapped fetch asks Gmail for one page of 500 messages
+- Other option: page through `nextPageToken` until every unprocessed message is listed.
+- Why: `max_emails_per_run` always caps a run in practice, and the SPEC lists 500 per run as a known limit; paging adds a loop no scenario asks for.
+- Command: build
+
+### A10. A token file that does not parse is reported as a `GmailError`, not a traceback
+- Other option: catch only `GoogleAuthError`, and let the `ValueError` of a malformed token file propagate.
+- Why: the issue asks that a Google error stop the run with a readable message, and a hand-damaged token file is the likeliest such error after `invalid_grant`.
+- Command: build
