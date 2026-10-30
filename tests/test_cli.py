@@ -1337,3 +1337,63 @@ def test_watch_refuses_two_o365_accounts(tmp_path, monkeypatch, capsys):
     assert cli.cmd_watch(_args(tmp_path, "watch")) == 1
 
     assert capsys.readouterr().err.startswith("error: watch handles one account only")
+
+
+def test_run_with_a_corrupt_token_names_auth_o365(tmp_path, monkeypatch, capsys):
+    """Finding 2, site 1, through run"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    (tmp_path / "o365-token.json").write_text('{"AccessToken": {')
+    fake_msal(monkeypatch)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+    _graph_on(monkeypatch, FakeGraph(), token=None)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    err = capsys.readouterr().err
+    assert err.startswith("error: Microsoft Graph error for me@example.com -- unreadable Office 365 token at ")
+    assert err.endswith("-- run `jev-mail auth-o365`\n")
+
+
+def test_a_network_failure_at_renewal_names_no_imap_port(tmp_path, monkeypatch, capsys):
+    """Finding 3, through run"""
+    import requests
+
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    write_token_file(tmp_path)
+    fake_msal(monkeypatch, raises={"acquire_token_silent_with_error": requests.ConnectionError("down")})
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+    _graph_on(monkeypatch, FakeGraph(), token=None)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    err = capsys.readouterr().err
+    assert "could not reach Microsoft" in err
+    assert ":993" not in err
+
+
+def test_auth_o365_replaces_a_corrupt_token_file(tmp_path, monkeypatch):
+    """Finding 2, site 5"""
+    (tmp_path / "o365-token.json").write_text('{"AccessToken": {')
+    app = fake_msal(monkeypatch, flow={"user_code": "A", "message": "enter A"}, device_result={"access_token": "t"})
+
+    assert cli.cmd_auth_o365(_args(tmp_path, "auth-o365")) == 0
+
+    assert (tmp_path / "o365-token.json").read_text() == app.built[0][2].serialize()
+
+
+@pytest.mark.parametrize("where", ["__init__", "initiate_device_flow"])
+def test_auth_o365_network_failure_is_an_error_not_a_traceback(tmp_path, monkeypatch, capsys, where):
+    """Finding 2, sites 6 and 7"""
+    import requests
+
+    fake_msal(
+        monkeypatch,
+        flow={"user_code": "A", "message": "enter A"},
+        device_result={"access_token": "t"},
+        raises={where: requests.ConnectionError("down")},
+    )
+
+    assert cli.cmd_auth_o365(_args(tmp_path, "auth-o365")) == 1
+
+    assert "could not reach Microsoft" in capsys.readouterr().err
+    assert not (tmp_path / "o365-token.json").exists()

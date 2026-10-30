@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from email.utils import formataddr
 from pathlib import Path
 from urllib.parse import quote
@@ -90,7 +91,8 @@ class GraphMailbox:
                 if not self._is_processed(item):
                     emails.append(self._email(item))
         complete = url is None and (limit is None or len(emails) < limit)
-        self._pending = (newest, {m.uid for m in emails}) if complete and newest else None
+        # A fetch that returned nothing moves no cursor, so a dry run never writes one (A9).
+        self._pending = (newest, {m.uid for m in emails}) if complete and emails and newest else None
         return emails
 
     def mark_processed(self, uid: int | str) -> None:
@@ -166,7 +168,10 @@ class GraphMailbox:
         if response.is_error:
             # No retry: a 429 or 5xx stops the account for this run (A6).
             raise GraphError(f"{method} {response.url.path} returned {response.status_code}: {response.text[:300]}")
-        return response.json() if response.content else {}
+        try:
+            return response.json() if response.content else {}
+        except ValueError as exc:
+            raise GraphError(f"{method} {response.url.path} returned {response.status_code} with a body that is not JSON") from exc
 
 
 def _message_path(uid: int | str) -> str:
@@ -182,19 +187,24 @@ def _token_source(token: Path, username: str) -> Callable[[], str]:
     import msal
 
     cache = msal.SerializableTokenCache()
-    cache.deserialize(token.read_text())
-    app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=cache)
+    try:
+        cache.deserialize(token.read_text())
+    except (OSError, ValueError) as exc:
+        raise GraphError(f"unreadable Office 365 token at {token} -- run `jev-mail auth-o365`") from exc
+    with _reaching_microsoft():
+        app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=cache)
     account = next((a for a in app.get_accounts() if a.get("username", "").lower() == username.lower()), None)
     if account is None:
         raise GraphError(f"no Office 365 sign-in for {username} in {token} -- run `jev-mail auth-o365`")
 
     def access_token() -> str:
-        result = app.acquire_token_silent_with_error(SCOPES, account)
+        with _reaching_microsoft():
+            result = app.acquire_token_silent_with_error(SCOPES, account)
         if not result or "access_token" not in result:
             error = result.get("error") if result else "no cached token"
             raise GraphError(f"Office 365 sign-in for {username} failed ({error}) -- run `jev-mail auth-o365`")
         if cache.has_state_changed:
-            _write_token(token, cache.serialize())
+            _save_cache(token, cache)
             cache.has_state_changed = False
         return result["access_token"]
 
@@ -211,14 +221,35 @@ def authorize_o365(config_dir: str | Path) -> Path:
     cache = msal.SerializableTokenCache()
     if token.exists():
         # Keeps the accounts already signed in; the file can hold several.
-        cache.deserialize(token.read_text())
-    app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=cache)
-    flow = app.initiate_device_flow(scopes=SCOPES)
-    if "user_code" not in flow:
-        raise GraphError(f"Office 365 sign-in did not start ({flow.get('error')}): {flow.get('error_description')}")
-    print(flow["message"], flush=True)
-    result = app.acquire_token_by_device_flow(flow)
+        try:
+            cache.deserialize(token.read_text())
+        except (OSError, ValueError):
+            # This command is the repair for an unreadable file, so it starts a new cache (A10).
+            cache = msal.SerializableTokenCache()
+    with _reaching_microsoft():
+        app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=cache)
+        flow = app.initiate_device_flow(scopes=SCOPES)
+        if "user_code" not in flow:
+            raise GraphError(f"Office 365 sign-in did not start ({flow.get('error')}): {flow.get('error_description')}")
+        print(flow["message"], flush=True)
+        result = app.acquire_token_by_device_flow(flow)
     if "access_token" not in result:
         raise GraphError(f"Office 365 sign-in failed ({result.get('error')}): {result.get('error_description')}")
-    _write_token(token, cache.serialize())
+    _save_cache(token, cache)
     return token
+
+
+@contextmanager
+def _reaching_microsoft() -> Iterator[None]:
+    # msal reaches Microsoft through `requests`, whose errors are OSError.
+    try:
+        yield
+    except OSError as exc:
+        raise GraphError(f"Office 365 sign-in could not reach Microsoft ({exc})") from exc
+
+
+def _save_cache(token: Path, cache) -> None:
+    try:
+        _write_token(token, cache.serialize())
+    except OSError as exc:
+        raise GraphError(f"could not write the Office 365 token to {token} ({exc})") from exc

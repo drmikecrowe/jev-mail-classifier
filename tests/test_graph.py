@@ -97,8 +97,10 @@ def add_token(cache, access_token: str) -> None:
     )
 
 
-def fake_msal(monkeypatch, *, accounts=None, silent=None, renew=False, flow=None, device_result=None):
-    """Replaces msal.PublicClientApplication with a class that answers from canned values."""
+def fake_msal(monkeypatch, *, accounts=None, silent=None, renew=False, flow=None, device_result=None, raises=None):
+    """Replaces msal.PublicClientApplication with a class that answers from canned values.
+    `raises` maps a method name ("__init__" included) to the exception it raises."""
+    raises = raises or {}
     import msal
 
     class FakeApp:
@@ -106,6 +108,8 @@ def fake_msal(monkeypatch, *, accounts=None, silent=None, renew=False, flow=None
         calls: list[str] = []
 
         def __init__(self, client_id, authority=None, token_cache=None, **kwargs):
+            if "__init__" in raises:
+                raise raises["__init__"]
             self.cache = token_cache
             FakeApp.built.append((client_id, authority, token_cache))
 
@@ -114,12 +118,16 @@ def fake_msal(monkeypatch, *, accounts=None, silent=None, renew=False, flow=None
 
         def acquire_token_silent_with_error(self, scopes, account, **kwargs):
             FakeApp.calls.append(f"silent {scopes} {account['username']}")
+            if "acquire_token_silent_with_error" in raises:
+                raise raises["acquire_token_silent_with_error"]
             if renew:
                 add_token(self.cache, "t2")
             return silent if silent is not None else {"access_token": "t2"}
 
         def initiate_device_flow(self, scopes=None, **kwargs):
             FakeApp.calls.append(f"initiate {scopes}")
+            if "initiate_device_flow" in raises:
+                raise raises["initiate_device_flow"]
             return flow
 
         def acquire_token_by_device_flow(self, flow, **kwargs):
@@ -409,3 +417,56 @@ def test_importing_the_cli_loads_no_msal():
     ).stdout
 
     assert out.strip() == "False"
+
+
+# --- Round 1 findings: errors on the token path and in a 2xx body -------
+
+
+def test_a_corrupt_token_file_raises_graph_error_naming_auth_o365(tmp_path, monkeypatch):
+    """Finding 2, sites 1"""
+    (tmp_path / "o365-token.json").write_text('{"AccessToken": {')
+    fake_msal(monkeypatch)
+
+    with pytest.raises(GraphError, match=r"unreadable Office 365 token .* -- run `jev-mail auth-o365`"):
+        GraphMailbox(_account(), tmp_path, http=FakeGraph().client()).__enter__()
+
+
+@pytest.mark.parametrize("where", ["__init__", "acquire_token_silent_with_error"])
+def test_a_network_failure_at_sign_in_raises_graph_error(tmp_path, monkeypatch, where):
+    """Finding 3, sites 2 and 4"""
+    import requests
+
+    write_token_file(tmp_path)
+    fake_msal(monkeypatch, raises={where: requests.ConnectionError("down")})
+
+    with pytest.raises(GraphError, match="could not reach Microsoft"):
+        GraphMailbox(_account(), tmp_path, http=FakeGraph().client()).__enter__()
+
+
+def test_a_token_write_that_fails_raises_graph_error(tmp_path, monkeypatch):
+    """Finding 2, site 9"""
+    write_token_file(tmp_path, mode=0o400)
+    fake_msal(monkeypatch, renew=True)
+
+    with pytest.raises(GraphError, match="o365-token.json"):
+        GraphMailbox(_account(), tmp_path, http=FakeGraph().client()).__enter__()
+
+
+def test_a_2xx_answer_that_is_not_json_raises_graph_error(tmp_path):
+    """Finding 2, the 2xx body site"""
+    fake = FakeGraph(routes={("GET", LIST_PATH): lambda request: httpx.Response(200, text="<html>proxy</html>")})
+
+    with graph_mailbox(fake, tmp_path) as mailbox, pytest.raises(GraphError, match="not JSON"):
+        mailbox.fetch_unprocessed(limit=25)
+
+
+def test_a_fetch_that_returns_nothing_leaves_the_cursor(tmp_path):
+    """Finding 1: a dry run with every message processed writes no cursor"""
+    State(tmp_path / "state.db")
+    fake = FakeGraph([message("m1", "2026-10-30T09:00:00Z", categories=["JevProcessed"])])
+
+    with graph_mailbox(fake, tmp_path) as mailbox:
+        assert mailbox.fetch_unprocessed(limit=25) == []
+        mailbox.fetch_unprocessed(limit=25)
+
+    assert State(tmp_path / "state.db").cursor(ACCOUNT_KEY) is None
