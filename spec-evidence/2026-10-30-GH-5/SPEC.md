@@ -29,7 +29,7 @@ Open decisions: none. Decide 1 is ruled: the cursor is a table in `state.db`.
 - Why: the pinnsg.com Office 365 tenant has basic auth off, so the IMAP backend cannot sign in.
 - Touches: `jev_mail/mailbox/graph.py` (new), `jev_mail/mailbox/__init__.py`, `jev_mail/config.py`, `jev_mail/state.py`, `jev_mail/cli.py`, `pyproject.toml`, `uv.lock`, `.gitignore`, `README.md`, `CLAUDE.md`, and tests.
 - Decide: Decide 1, where the per-account cursor is stored.
-- Decided: Decide 1 ruled a `cursor` table in `state.db`, keyed by the account key; it governs "The cursor" and S2.3 to S2.7 (Mike Crowe, 2026-10-30).
+- Decided: Decide 1 ruled a `cursor` table in `state.db`, keyed by the account key; it governs "The cursor" and S2.3 to S2.7 (Mike Crowe, 2026-10-30). Decide 2 ruled that an `o365` account always reads the Inbox and ignores its `folder` key, with no refusal; it governs the Known limits line on the Inbox (Mike Crowe, 2026-10-30).
 
 - Tier: 2
 - Issue: GH-5
@@ -59,7 +59,7 @@ This section answers where the per-account cursor is stored (the story's SR-DEFE
 - Storage: a table `cursor (account TEXT PRIMARY KEY, received_at TEXT NOT NULL)` in `state.db`, beside `config.yaml`, keyed by the account key (Decide 1, Mike Crowe, 2026-10-30). `State` gets three methods: `has(account_key, message_key) -> bool`, `cursor(account_key) -> str | None` and `set_cursor(account_key, received_at)`.
 - Read: at the start of every `fetch_unprocessed`, `GraphMailbox` checks for `<config directory>/state.db`. When the file exists, it opens it through `State` (once per session) and reads the cursor and the processed rows. With no file there is no cursor and no row, so the whole Inbox is eligible. A `state.db` that `cli` creates after the mailbox opened, as on a first `watch`, is read from the next fetch on.
 - Fetch: with a cursor, the list request carries `$filter=receivedDateTime ge <cursor>`. With none, it carries no `$filter`. Both carry `$orderby=receivedDateTime desc` and `$top=50`.
-- Advance: a fetch is complete when the page walk ended because the last page had no `@odata.nextLink`, and not because the cap was reached. The cursor moves to the newest `receivedDateTime` seen in that page walk, returned or skipped, only when the fetch was complete, the walk saw at least one message, and `mark_processed` ran for every message the fetch returned. A skipped message is already processed, so moving past it loses nothing. The move happens at the start of the next `fetch_unprocessed` and on exit from the mailbox. Otherwise the cursor stays.
+- Advance: a fetch is complete when it returned fewer messages than its `limit` and the page walk ended because the last page had no `@odata.nextLink`. A fetch that returned exactly `limit` messages is capped, even when its last page had no `@odata.nextLink`. The cursor moves to the newest `receivedDateTime` seen in that page walk, returned or skipped, only when the fetch was complete, the walk saw at least one message, and `mark_processed` ran for every message the fetch returned. A skipped message is already processed, so moving past it loses nothing. The move happens at the start of the next `fetch_unprocessed` and on exit from the mailbox. Otherwise the cursor stays.
 - A dry run never calls `mark_processed`, so it never moves the cursor and never creates `state.db`.
 
 ## Scenarios
@@ -103,12 +103,11 @@ All Graph scenarios use the fake Graph and an account `MailboxConfig(backend="o3
 ### S4. Config and wiring (AC-1, AC-8)
 - S4.1 Given `mailbox: {backend: o365, username: me@example.com}`, when `load_config` runs, then the account has `backend == "o365"`, `host == "graph.microsoft.com"` and `poll_interval_seconds == 60`, with no `ConfigError`.
 - S4.2 (negative) Given `mailbox: {backend: pop3, host: imap.example.com}`, when `load_config` runs, then the `ConfigError` message names `imap, gmail, o365`.
-- S4.3 (negative) Given an `o365` account with `folder: Work`, when the mailbox is entered, then it raises `ConfigError` whose message names `Work` and says only the Inbox is supported, and the fake Graph handler gets no request. The story names the Inbox (AC-3) and does not ask for this refusal; it is added so that a `folder` key is never silently ignored.
-- S4.4 Given a loaded config whose first account has `backend: o365`, when `save_config` writes it, then the written `mailbox:` block holds `backend: o365`.
-- S4.5 Given an `accounts:` list of one IMAP account and one `o365` account, with `Mailbox` and `GraphMailbox` in `jev_mail.cli` replaced by recording fakes, when `run --dry-run` runs, then `Mailbox` is built with the IMAP account, `GraphMailbox` with the `o365` account and the config directory, each is entered once, and the exit code is 0.
-- S4.6 Given a single `o365` account with no `poll_interval_seconds` key, a fake `GraphMailbox` whose `supports_idle()` is `False` and whose second `fetch_unprocessed` returns a message `m9` that the first did not, and `time.sleep` replaced by a fake that records its argument and raises `KeyboardInterrupt` on its second call, when `watch` runs, then the fake sleep is first called with `60`, and `m9` is marked processed in the second pass.
-- S4.7 (negative) Given an `accounts:` list of two `o365` accounts, when `watch` runs, then stderr holds `error: watch handles one account only` and the exit code is 1.
-- S4.8 Given a fresh Python process, when it runs `import jev_mail.cli`, then `msal` is not in `sys.modules`.
+- S4.3 Given a loaded config whose first account has `backend: o365`, when `save_config` writes it, then the written `mailbox:` block holds `backend: o365`.
+- S4.4 Given an `accounts:` list of one IMAP account and one `o365` account, with `Mailbox` and `GraphMailbox` in `jev_mail.cli` replaced by recording fakes, when `run --dry-run` runs, then `Mailbox` is built with the IMAP account, `GraphMailbox` with the `o365` account and the config directory, each is entered once, and the exit code is 0.
+- S4.5 Given a single `o365` account with no `poll_interval_seconds` key, a fake `GraphMailbox` whose `supports_idle()` is `False` and whose second `fetch_unprocessed` returns a message `m9` that the first did not, and `time.sleep` replaced by a fake that records its argument and raises `KeyboardInterrupt` on its second call, when `watch` runs, then the fake sleep is first called with `60`, and `m9` is marked processed in the second pass.
+- S4.6 (negative) Given an `accounts:` list of two `o365` accounts, when `watch` runs, then stderr holds `error: watch handles one account only` and the exit code is 1.
+- S4.7 Given a fresh Python process, when it runs `import jev_mail.cli`, then `msal` is not in `sys.modules`.
 
 ### S5. Live check (Example)
 - S5.1 Given the engineer's pinnsg.com mailbox with Step 0's tenant consent granted, `auth-o365` run once, and a `BULK` category whose actions are `tag BULK` and `move Bulk`, when a message from a second address of the engineer's that the `senders.csv` table marks `unsubscribe` arrives and `./jev-mail run` runs, then in Outlook on the web the message carries the categories `BULK` and `JevProcessed` and is in the folder `Bulk`; and a second `./jev-mail run --dry-run` prints no line for its subject.
@@ -131,8 +130,8 @@ All Graph scenarios use the fake Graph and an account `MailboxConfig(backend="o3
 - `jev_mail/cli.py`: `_open_mailbox` picks `GraphMailbox` for `o365`, `GraphError` in the `run` and `watch` except tuples, the Graph line of `_mailbox_error_message`, and the `auth-o365` subcommand.
 - `pyproject.toml`, `uv.lock`: `msal`.
 - `.gitignore`: `o365-token.json`.
-- `tests/test_graph.py` (new): S1.4, S1.5, S1.7, S2.1 to S2.4, S2.9, S3.1 to S3.4, S3.6, S3.9, S4.3, S4.8.
-- `tests/test_cli.py`: S1.1 to S1.3, S1.6, S2.5 to S2.8, S2.10, S2.11, S3.5, S3.7, S3.8, S4.5 to S4.7. `tests/test_config.py`: S4.1, S4.2, S4.4. `tests/test_state.py`: the three new `State` methods.
+- `tests/test_graph.py` (new): S1.4, S1.5, S1.7, S2.1 to S2.4, S2.9, S3.1 to S3.4, S3.6, S3.9, S4.7.
+- `tests/test_cli.py`: S1.1 to S1.3, S1.6, S2.5 to S2.8, S2.10, S2.11, S3.5, S3.7, S3.8, S4.4 to S4.6. `tests/test_config.py`: S4.1, S4.2, S4.3. `tests/test_state.py`: the three new `State` methods.
 
 ## Documentation
 - `README.md`, after the Gmail API subsection: a new "Office 365 (Microsoft Graph)" subsection with Step 0 (the tenant admin consent for the client id), `auth-o365`, the `backend: o365` key, the Inbox-only rule, and what `tag`, `move`, `flag` and `mark_read` do on Office 365.
@@ -140,7 +139,7 @@ All Graph scenarios use the fake Graph and an account `MailboxConfig(backend="o3
 
 ## Known limits
 - One token file per config directory. It can hold several accounts, but `auth-o365` signs in one at a time.
-- Only the Inbox is watched; an `o365` account with another `folder` is refused.
+- Only the Inbox is watched. An `o365` account ignores its `folder` key (Decide 2, Mike Crowe, 2026-10-30).
 - `move` finds and creates top-level folders only.
 - A message moved back into the Inbox with a `receivedDateTime` older than the cursor is never fetched (the story accepts this).
 - Until the first complete fetch sets the cursor, each run walks the Inbox from the newest message and skips processed ones on the client, so a large Inbox costs more list requests on early runs.
@@ -152,7 +151,7 @@ All Graph scenarios use the fake Graph and an account `MailboxConfig(backend="o3
 
 | Layer | What it gates | Threshold |
 |---|---|---|
-| tests | S1.1 to S4.8, M1, M2, M4 to M8 | `mise exec -- uv run pytest -q` exits 0 |
+| tests | S1.1 to S4.7, M1, M2, M4 to M8 | `mise exec -- uv run pytest -q` exits 0 |
 | secrets | committed content, M3 | `mise exec gitleaks@8.30.1 -- gitleaks git --no-banner .` reports no leak |
 | diff reading | S1.8, M3, M5, M8, the Documentation entries | `git check-ignore o365-token.json` prints it; `git diff master -- jev_mail/mailbox/base.py jev_mail/mailbox/imap.py jev_mail/mailbox/gmail.py jev_mail/tui` is empty |
 | live run | S5.1 | the categories and the folder seen in Outlook on the web; the second dry run prints no line for the subject |

@@ -42,6 +42,17 @@ Default: A.
 - Ruling: A (Mike Crowe, 2026-10-30)
 Changes: "The cursor" storage line and S2.3 to S2.7 state the `state.db` table.
 
+### Decide 2. What does an `o365` account do with a `folder` other than `INBOX`?
+
+Evidence: Gate 1a round 1, PR-SCOPE on the refusal scenario (`spec-gate.md` at `0307689`); AC-3 names the Inbox and asks for no refusal; agent decision A7.
+
+- A. Drop the refusal. `GraphMailbox` always reads the Inbox and ignores `folder`, stated as a Known limit. Cost: a `folder: Work` key is silently ignored.
+- B. Keep the `ConfigError` and cite AC-3 for it. Cost: one more check, and the scope finding can return in round 2.
+
+Default: A.
+- Ruling: A (Mike Crowe, 2026-10-30)
+Changes: the refusal scenario is removed, S4.4 to S4.8 are renumbered S4.3 to S4.7, and the Known limits line on the Inbox says the key is ignored. This ruling replaces agent decision A7.
+
 ## Revisions
 
 ### Revision 1. Intent review folded
@@ -49,3 +60,6 @@ All three gaps in `spec-intent.md` are accepted. "The cursor" now opens `state.d
 
 ### Revision 2. Decide 1 ruled
 The cursor is a table in `state.db` (A, Mike Crowe, 2026-10-30).
+
+### Revision 3. Gate 1a round 1: scope and the complete fetch
+Gate 1a found PR-SCOPE on the Inbox refusal; Decide 2 removes it (A, Mike Crowe, 2026-10-30). The judge's gap on a fetch that returns exactly `limit` messages is answered in "The cursor": that fetch is capped, so the cursor waits one more run.
