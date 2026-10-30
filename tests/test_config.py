@@ -471,3 +471,29 @@ def yaml_mailbox(path) -> dict:
     import yaml
 
     return yaml.safe_load(path.read_text())["mailbox"]
+
+
+O365_YAML = "mailbox:\n  backend: o365\n  username: me@example.com\ncategories:\n  invoice:\n    description: I\n"
+
+
+def test_o365_account_defaults_its_host_and_poll_interval(tmp_path):
+    """GH-5 S4.1"""
+    account = _load(tmp_path, O365_YAML).mailbox
+
+    assert (account.backend, account.host, account.poll_interval_seconds) == ("o365", "graph.microsoft.com", 60)
+
+
+def test_unknown_backend_names_all_three(tmp_path):
+    """GH-5 S4.2"""
+    with pytest.raises(ConfigError, match="imap, gmail, o365"):
+        _load(tmp_path, "mailbox:\n  backend: pop3\n  host: imap.example.com\ncategories:\n  invoice:\n    description: I\n")
+
+
+def test_save_writes_backend_for_o365(tmp_path, monkeypatch):
+    """GH-5 S4.3"""
+    _creds(monkeypatch)
+    out = tmp_path / "out.yaml"
+
+    save_config(_load(tmp_path, O365_YAML), out)
+
+    assert yaml_mailbox(out)["backend"] == "o365"

@@ -12,8 +12,9 @@ _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 ACTION_TYPES = ("tag", "move", "flag", "unflag", "mark_read", "mark_unread", "webhook")
 TLS_MODES = ("ssl", "starttls")
-BACKENDS = ("imap", "gmail")
+BACKENDS = ("imap", "gmail", "o365")
 GMAIL_HOST = "gmail.googleapis.com"
+GRAPH_HOST = "graph.microsoft.com"
 
 
 class ConfigError(Exception):
@@ -171,6 +172,8 @@ def _load_account(mb_raw: dict, env: dict, label: str) -> MailboxConfig:
         raise ConfigError(f"{label}.backend must be one of {', '.join(BACKENDS)}, got {mailbox.backend!r}")
     if mailbox.backend == "gmail" and not mailbox.host:
         mailbox.host = GMAIL_HOST
+    if mailbox.backend == "o365" and not mailbox.host:
+        mailbox.host = GRAPH_HOST
     if mailbox.tls not in TLS_MODES:
         raise ConfigError(f"{label}.tls must be one of {', '.join(TLS_MODES)}, got {mailbox.tls!r}")
     if not mailbox.host:

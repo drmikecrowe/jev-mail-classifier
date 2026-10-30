@@ -986,3 +986,354 @@ def test_watch_polls_a_gmail_account(tmp_path, monkeypatch):
         cli.cmd_watch(_args(tmp_path, "watch", "--dry-run"))
 
     assert slept == [7]
+
+
+# --- GH-5: Office 365 over Microsoft Graph -----------------------------------
+
+from tests.test_graph import ACCOUNT_KEY as GRAPH_KEY, FakeGraph, fake_msal, message, write_token_file  # noqa: E402
+
+O365_YAML = "mailbox:\n  backend: o365\n  username: me@example.com\n" + INVOICE_CATEGORIES
+NO_ERROR = "Office 365 sign-in for me@example.com failed (invalid_grant) -- run `jev-mail auth-o365`"
+
+
+def _graph_on(monkeypatch, fake: FakeGraph, token=lambda: "t"):
+    """Replaces cli.GraphMailbox so `run` and `watch` build the real one on the fake Graph."""
+    from jev_mail.mailbox.graph import GraphMailbox
+
+    built = []
+
+    def factory(account, config_dir):
+        built.append((account, config_dir))
+        return GraphMailbox(account, config_dir, http=fake.client(), token=token)
+
+    monkeypatch.setattr(cli, "GraphMailbox", factory)
+    return built
+
+
+def _no_match_client() -> MagicMock:
+    client = MagicMock()
+    client.decide.return_value = {"Invoice": 0.0}
+    return client
+
+
+def _marked(fake: FakeGraph) -> list[str]:
+    return [path.split("/")[-1] for _, path, body in fake.sent("PATCH") if body == {"categories": ["JevProcessed"]}]
+
+
+def _o365_config(*categories: Category) -> AppConfig:
+    account = MailboxConfig(backend="o365", host="graph.microsoft.com", username="me@example.com")
+    return AppConfig(mailbox=account, jev=JevSettings(default_threshold=0.6), categories=list(categories))
+
+
+def test_auth_o365_shows_the_code_and_writes_an_owner_only_token(tmp_path, monkeypatch, capsys):
+    """S1.1"""
+    import stat
+
+    from jev_mail.mailbox.graph import AUTHORITY, CLIENT_ID
+
+    message_text = "To sign in, open https://microsoft.com/devicelogin and enter ABC123"
+    app = fake_msal(
+        monkeypatch, flow={"user_code": "ABC123", "message": message_text}, device_result={"access_token": "t"}
+    )
+
+    assert cli.cmd_auth_o365(_args(tmp_path, "auth-o365")) == 0
+
+    token = tmp_path / "o365-token.json"
+    ((client_id, authority, cache),) = app.built
+    assert (client_id, authority) == (CLIENT_ID, AUTHORITY)
+    assert app.calls == ["initiate ['Mail.ReadWrite']", "device"]
+    assert token.read_text() == cache.serialize()
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
+    # Exactly these two lines: no token or cache text is printed.
+    assert capsys.readouterr().out == f"{message_text}\nsaved the Office 365 token to {token}\n"
+
+
+def test_auth_o365_declined_writes_no_token(tmp_path, monkeypatch, capsys):
+    """S1.2"""
+    fake_msal(
+        monkeypatch,
+        flow={"user_code": "ABC123", "message": "enter ABC123"},
+        device_result={"error": "authorization_declined", "error_description": "denied"},
+    )
+
+    assert cli.cmd_auth_o365(_args(tmp_path, "auth-o365")) == 1
+
+    assert "authorization_declined" in capsys.readouterr().err
+    assert not (tmp_path / "o365-token.json").exists()
+
+
+@pytest.mark.parametrize("command", ["run", "watch"])
+def test_no_o365_token_names_auth_o365_before_any_graph_call(tmp_path, monkeypatch, capsys, command):
+    """S1.3"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+    fake = FakeGraph()
+    _graph_on(monkeypatch, fake, token=None)
+
+    assert getattr(cli, f"cmd_{command}")(_args(tmp_path, command)) == 1
+
+    err = capsys.readouterr().err
+    assert err == f"error: no Office 365 token at {tmp_path}/o365-token.json -- run `jev-mail auth-o365`\n"
+    assert fake.requests == []
+
+
+def test_a_rejected_refresh_token_stops_the_account(tmp_path, monkeypatch, capsys):
+    """S1.6"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    write_token_file(tmp_path)
+    app = fake_msal(monkeypatch, silent={"error": "invalid_grant", "error_description": "AADSTS70043"})
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+    fake = FakeGraph()
+    _graph_on(monkeypatch, fake, token=None)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    assert capsys.readouterr().err == f"error: Microsoft Graph error for me@example.com -- {NO_ERROR}\n"
+    assert not any(c.startswith("initiate") for c in app.calls)
+    assert fake.requests == []
+
+
+def _thirty() -> list[dict]:
+    return [message(f"n{i}", f"2026-10-30T10:{i:02d}:00Z") for i in range(30, 0, -1)]
+
+
+def test_a_capped_run_takes_the_newest_and_the_next_run_the_rest(tmp_path, monkeypatch):
+    """S2.5"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _no_match_client())
+    fake = FakeGraph(_thirty())
+    _graph_on(monkeypatch, fake)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 0
+    first = _marked(fake)
+    fake.requests.clear()
+    assert cli.cmd_run(_args(tmp_path, "run")) == 0
+
+    assert first == [f"n{i}" for i in range(30, 5, -1)]
+    assert _marked(fake) == [f"n{i}" for i in range(5, 0, -1)]
+
+
+def test_the_cursor_waits_for_a_complete_fetch(tmp_path, monkeypatch):
+    """S2.6"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _no_match_client())
+    fake = FakeGraph(_thirty())
+    _graph_on(monkeypatch, fake)
+
+    cli.cmd_run(_args(tmp_path, "run"))
+    assert State(tmp_path / "state.db").cursor(GRAPH_KEY) is None
+    cli.cmd_run(_args(tmp_path, "run"))
+    assert State(tmp_path / "state.db").cursor(GRAPH_KEY) == "2026-10-30T10:30:00Z"
+    fake.requests.clear()
+    cli.cmd_run(_args(tmp_path, "run"))
+
+    assert fake.list_requests()[0].url.params["$filter"] == "receivedDateTime ge 2026-10-30T10:30:00Z"
+
+
+def test_a_failed_classify_holds_the_cursor_back(tmp_path):
+    """S2.7"""
+    from jev_mail.mailbox.graph import GraphMailbox
+
+    fake = FakeGraph([message("m2", "2026-10-30T10:00:00Z"), message("m1", "2026-10-30T09:00:00Z")])
+    client = _fake_client({"Invoice": 0.0}, ProviderError("boom"))
+    config = _o365_config(Category(name="Invoice", description="Invoice"))
+    state = State(tmp_path / "state.db")
+
+    with GraphMailbox(config.mailbox, tmp_path, http=fake.client(), token=lambda: "t") as mailbox:
+        assert cli._process_unprocessed(mailbox, client, config, False, state=state) == 1
+        again = mailbox.fetch_unprocessed(limit=25)
+
+    assert state.cursor(GRAPH_KEY) is None
+    assert [m.uid for m in again] == ["m1"]
+
+
+def test_mail_that_arrives_during_a_pass_is_taken_by_the_next(tmp_path):
+    """S2.8"""
+    from jev_mail.mailbox.graph import GraphMailbox
+
+    state = State(tmp_path / "state.db")
+    state.set_cursor(GRAPH_KEY, "2026-10-30T08:00:00Z")
+    fake = FakeGraph([message("m1", "2026-10-30T09:00:00Z")])
+
+    def decide(*args):
+        if not any(m["id"] == "m9" for m in fake.messages):
+            fake.messages.insert(0, message("m9", "2026-10-30T09:05:00Z"))
+        return {"Invoice": 0.0}
+
+    client = MagicMock()
+    client.decide.side_effect = decide
+    config = _o365_config(Category(name="Invoice", description="Invoice"))
+
+    with GraphMailbox(config.mailbox, tmp_path, http=fake.client(), token=lambda: "t") as mailbox:
+        cli._process_unprocessed(mailbox, client, config, False, state=state)
+        cli._process_unprocessed(mailbox, client, config, False, state=state)
+
+    assert _marked(fake) == ["m1", "m9"]
+
+
+def test_a_state_db_created_after_enter_is_read_by_the_next_fetch(tmp_path, monkeypatch):
+    """S2.10"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _no_match_client())
+    # The fake applies no PATCH, as an Outlook rule that removes JevProcessed would.
+    fake = FakeGraph([message("m1", "2026-10-30T09:00:00Z")])
+    _graph_on(monkeypatch, fake)
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_watch(_args(tmp_path, "watch"))
+
+    assert len(fake.list_requests()) == 2
+    assert _marked(fake) == ["m1"]
+
+
+def test_a_graph_429_stops_the_account(tmp_path, monkeypatch, capsys):
+    """S2.11"""
+    import httpx
+
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+    fake = FakeGraph(
+        routes={("GET", "/me/mailFolders/inbox/messages"): httpx.Response(429, json={"error": {"code": "TooManyRequests"}})}
+    )
+    _graph_on(monkeypatch, fake)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 1
+
+    err = capsys.readouterr().err
+    assert err.startswith("error: Microsoft Graph error for me@example.com --")
+    assert "429" in err
+
+
+def test_only_the_first_move_runs_on_graph(tmp_path):
+    """S3.5"""
+    from jev_mail.mailbox.graph import GraphMailbox
+
+    def folders(request):
+        name = request.url.params["$filter"].split("'")[1]
+        return {"value": [{"id": f"id-{name}", "displayName": name}]}
+
+    fake = FakeGraph([message("m1", "2026-10-30T09:00:00Z")], routes={("GET", "/me/mailFolders"): folders})
+    config = _o365_config(
+        Category(name="A", description="A", actions=[Action(type="move", folder="FolderA")]),
+        Category(name="B", description="B", actions=[Action(type="move", folder="FolderB")]),
+    )
+
+    with GraphMailbox(config.mailbox, tmp_path, http=fake.client(), token=lambda: "t") as mailbox:
+        cli._process_unprocessed(mailbox, _fake_client({"A": 0.9, "B": 0.9}), config, False)
+
+    assert [(path, body) for _, path, body in fake.sent("POST")] == [
+        ("/me/messages/m1/move", {"destinationId": "id-FolderA"})
+    ]
+
+
+def test_a_run_marks_the_category_and_writes_the_state_row(tmp_path, monkeypatch):
+    """S3.7"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _no_match_client())
+    fake = FakeGraph([message("m1", "2026-10-30T09:00:00Z")])
+    _graph_on(monkeypatch, fake)
+
+    assert cli.cmd_run(_args(tmp_path, "run")) == 0
+
+    assert fake.sent("PATCH") == [("PATCH", "/me/messages/m1", {"categories": ["JevProcessed"]})]
+    assert State(tmp_path / "state.db").has(GRAPH_KEY, "<m1@example.com>")
+
+
+def test_a_dry_run_on_graph_changes_nothing(tmp_path, monkeypatch):
+    """S3.8"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client({"Invoice": 0.9}))
+    fake = FakeGraph([message("m1", "2026-10-30T09:00:00Z")])
+    _graph_on(monkeypatch, fake)
+
+    assert cli.cmd_run(_args(tmp_path, "run", "--dry-run")) == 0
+
+    assert {method for method, _, _ in fake.sent()} == {"GET"}
+    assert not (tmp_path / "state.db").exists()
+
+
+def test_run_opens_graph_for_an_o365_account(tmp_path, monkeypatch):
+    """S4.4"""
+    (tmp_path / "config.yaml").write_text(
+        "accounts:\n  - host: imap.example.com\n  - backend: o365\n    username: me@example.com\n" + INVOICE_CATEGORIES
+    )
+    imap = _fake_mailbox_class([])
+    entered = []
+
+    class FakeGraphMailbox(_fake_mailbox_class([])):
+        built_with: list = []
+
+        def __init__(self, account, config_dir):
+            FakeGraphMailbox.built_with.append((account, config_dir))
+
+        def __enter__(self):
+            entered.append("o365")
+            return self
+
+    monkeypatch.setattr(cli, "Mailbox", imap)
+    monkeypatch.setattr(cli, "GraphMailbox", FakeGraphMailbox)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+
+    assert cli.cmd_run(_args(tmp_path, "run", "--dry-run")) == 0
+
+    assert [(a.backend, a.host) for a in imap.built] == [("imap", "imap.example.com")]
+    assert [(a.backend, d) for a, d in FakeGraphMailbox.built_with] == [("o365", tmp_path)]
+    assert entered == ["o365"]
+
+
+def test_watch_polls_an_o365_account(tmp_path, monkeypatch):
+    """S4.5"""
+    (tmp_path / "config.yaml").write_text(O365_YAML)
+    m9 = Email(uid="m9", subject="New", body="b", message_id="<m9@example.com>")
+    batches = iter([[], [m9]])
+    marked = []
+    slept = []
+
+    class FakeGraphMailbox(_fake_mailbox_class([])):
+        def __init__(self, account, config_dir):
+            pass
+
+        def fetch_unprocessed(self, limit=None):
+            return next(batches)
+
+        def mark_processed(self, uid):
+            marked.append(uid)
+
+        def supports_idle(self):
+            return False
+
+    def fake_sleep(seconds):
+        slept.append(seconds)
+        if len(slept) == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "GraphMailbox", FakeGraphMailbox)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _no_match_client())
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_watch(_args(tmp_path, "watch"))
+
+    assert slept[0] == 60
+    assert marked == ["m9"]
+
+
+def test_watch_refuses_two_o365_accounts(tmp_path, monkeypatch, capsys):
+    """S4.6"""
+    (tmp_path / "config.yaml").write_text(
+        "accounts:\n  - backend: o365\n    username: a@example.com\n  - backend: o365\n    username: b@example.com\n"
+        + INVOICE_CATEGORIES
+    )
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client())
+
+    assert cli.cmd_watch(_args(tmp_path, "watch")) == 1
+
+    assert capsys.readouterr().err.startswith("error: watch handles one account only")

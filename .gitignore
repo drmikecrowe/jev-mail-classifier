@@ -16,3 +16,4 @@ senders.csv
 sender-census.csv
 client_secrets.json
 gmail-token.json
+o365-token.json

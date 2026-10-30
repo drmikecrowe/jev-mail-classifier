@@ -19,15 +19,24 @@ CREATE TABLE IF NOT EXISTS processed (
 )
 """
 
+_CURSOR_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cursor (
+    account TEXT PRIMARY KEY,
+    received_at TEXT NOT NULL
+)
+"""
+
 
 class State:
-    """A local record of each processed email, beside the server keyword.
-    The keyword stays the source of truth; nothing reads this record yet."""
+    """A local record of each processed email, beside the server keyword, and
+    one fetch cursor per account. The keyword stays the source of truth;
+    `GraphMailbox` reads the rows and the cursor to skip mail (GH-5)."""
 
     def __init__(self, path: str | Path):
         self._conn = sqlite3.connect(path)
         with self._conn:
             self._conn.execute(_SCHEMA)
+            self._conn.execute(_CURSOR_SCHEMA)
 
     def record(self, account_key: str, mail: Email, source: str, probabilities: dict, actions: list[dict]) -> None:
         # A message without a Message-ID falls back to its UID, unique only within one folder.
@@ -44,3 +53,17 @@ class State:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+
+    def has(self, account_key: str, message_key: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM processed WHERE account = ? AND message_id = ?", (account_key, message_key)
+        ).fetchone()
+        return row is not None
+
+    def cursor(self, account_key: str) -> str | None:
+        row = self._conn.execute("SELECT received_at FROM cursor WHERE account = ?", (account_key,)).fetchone()
+        return row[0] if row else None
+
+    def set_cursor(self, account_key: str, received_at: str) -> None:
+        with self._conn:
+            self._conn.execute("INSERT OR REPLACE INTO cursor VALUES (?, ?)", (account_key, received_at))

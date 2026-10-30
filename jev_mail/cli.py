@@ -12,8 +12,9 @@ from jev_mail import tier0
 from jev_mail.actions import run_action
 from jev_mail.classify import classify, matched_categories
 from jev_mail.config import AppConfig, ConfigError, MailboxConfig, load_config
-from jev_mail.mailbox import GmailError, GmailMailbox, MailBackend, Mailbox
+from jev_mail.mailbox import GmailError, GmailMailbox, GraphError, GraphMailbox, MailBackend, Mailbox
 from jev_mail.mailbox.gmail import authorize_gmail
+from jev_mail.mailbox.graph import authorize_o365
 from jev_mail.providers import ProviderError, get_jev_client
 from jev_mail.providers.base import JevClient
 from jev_mail.state import State
@@ -107,7 +108,11 @@ def _process_unprocessed(
 
 
 def _open_mailbox(account: MailboxConfig, config_dir: Path):
-    return GmailMailbox(account, config_dir) if account.backend == "gmail" else Mailbox(account)
+    if account.backend == "gmail":
+        return GmailMailbox(account, config_dir)
+    if account.backend == "o365":
+        return GraphMailbox(account, config_dir)
+    return Mailbox(account)
 
 
 def _mailbox_error_message(exc: Exception, account: MailboxConfig) -> str:
@@ -115,6 +120,8 @@ def _mailbox_error_message(exc: Exception, account: MailboxConfig) -> str:
         return str(exc)
     if isinstance(exc, GmailError):
         return f"Gmail API error for {account.username} -- {exc}"
+    if isinstance(exc, GraphError):
+        return f"Microsoft Graph error for {account.username} -- {exc}"
     if isinstance(exc, OSError):
         return f"couldn't connect to {account.host}:{account.port} -- {exc}"
     return f"IMAP error talking to {account.host} -- {exc}"
@@ -167,7 +174,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     failed += _process_unprocessed(
                         mailbox, client, config, args.dry_run, account=account, state=state, senders=senders, review=review
                     )
-            except (OSError, imaplib.IMAP4.error, ConfigError, GmailError) as exc:
+            except (OSError, imaplib.IMAP4.error, ConfigError, GmailError, GraphError) as exc:
                 print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
                 return 1
     return 1 if failed else 0
@@ -199,7 +206,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 else:
                     time.sleep(config.mailbox.poll_interval_seconds)
                 _process_unprocessed(mailbox, client, config, args.dry_run, state=state, senders=senders)
-    except (OSError, imaplib.IMAP4.error, ConfigError, GmailError) as exc:
+    except (OSError, imaplib.IMAP4.error, ConfigError, GmailError, GraphError) as exc:
         print(f"error: {_mailbox_error_message(exc, config.mailbox)}", file=sys.stderr)
         return 1
 
@@ -211,6 +218,16 @@ def cmd_auth_gmail(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"saved the Gmail token to {token}")
+    return 0
+
+
+def cmd_auth_o365(args: argparse.Namespace) -> int:
+    try:
+        token = authorize_o365(Path(args.dir))
+    except GraphError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"saved the Office 365 token to {token}")
     return 0
 
 
@@ -229,6 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument("--dry-run", action="store_true", help="classify and print, without applying any action")
 
     subparsers.add_parser("auth-gmail", help="sign in to Gmail once and save the token beside config.yaml")
+    subparsers.add_parser("auth-o365", help="sign in to Office 365 once and save the token beside config.yaml")
 
     return parser
 
@@ -243,7 +261,13 @@ def main() -> None:
             args.dry_run = False
             args.review = None
 
-    commands = {"configure": cmd_configure, "run": cmd_run, "watch": cmd_watch, "auth-gmail": cmd_auth_gmail}
+    commands = {
+        "configure": cmd_configure,
+        "run": cmd_run,
+        "watch": cmd_watch,
+        "auth-gmail": cmd_auth_gmail,
+        "auth-o365": cmd_auth_o365,
+    }
     sys.exit(commands[args.command](args))
 
 

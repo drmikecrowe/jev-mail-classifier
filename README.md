@@ -141,6 +141,22 @@ mailbox:
 
 On Gmail, `tag` adds a label of that name, and creates it when it does not exist. `move` adds the folder's label and takes the mail out of the inbox; `move` to `[Gmail]/All Mail` only archives it. `flag` stars the mail, and `mark_read` / `mark_unread` change its unread state. Processed mail gets the `JevProcessed` label. `watch` polls a Gmail account every `poll_interval_seconds`, because the Gmail API has no IDLE. One config directory holds one Gmail account, and the wizard cannot set one up: write `backend: gmail` by hand.
 
+### Office 365 (Microsoft Graph)
+
+Many Office 365 tenants turn basic auth off, so IMAP cannot sign in. The `o365` backend reads the Inbox through Microsoft Graph instead. It needs no app password.
+
+0. Once per tenant, an admin grants consent to the app **Microsoft Graph Command Line Tools** (client id `14d82eec-204b-4c2f-b7e8-296a70dab67e`) for the delegated permission `Mail.ReadWrite`.
+1. Run `./jev-mail auth-o365` once. It prints a URL and a code. Open the URL, enter the code, and sign in with the mailbox's work account. It saves `o365-token.json` beside `config.yaml`, readable by you only. The file is git-ignored; never commit it.
+2. In `config.yaml`, give the account `backend: o365`. It needs no host or password:
+
+```yaml
+mailbox:
+  backend: o365
+  username: you@yourcompany.com
+```
+
+An `o365` account always reads the Inbox and ignores its `folder` key. On Office 365, `tag` adds an Outlook category of that name and keeps the others. `move` moves the mail to a top-level folder of that name, and creates the folder when it does not exist. `flag` / `unflag` set the follow-up flag, and `mark_read` / `mark_unread` change the read state. Processed mail gets the `JevProcessed` category. `state.db` also keeps a fetch cursor for the account, so a later run asks Graph only for newer mail. A message moved back into the Inbox that is older than the cursor is not fetched again. `watch` polls an `o365` account every `poll_interval_seconds`. A token renewal needs no sign-in; when Microsoft rejects the saved sign-in, run `./jev-mail auth-o365` again.
+
 ## What it looks like
 
 `jev-mail configure` is a three-step terminal UI:
