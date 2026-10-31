@@ -39,3 +39,13 @@
 - Other option: copy the four-line writer into `graph.py`.
 - Why: one writer keeps the `0600` rule in one place, and importing `gmail.py` loads no Google library (fact 6).
 - Command: plan
+
+### A9. The cursor moves only after a complete fetch that returned at least one message, all of them marked
+- Other option: keep "the walk saw at least one message", and pass a dry-run flag into `GraphMailbox` so a dry run never writes the cursor.
+- Why: adversary round 1 found that a dry run with every message already processed wrote the cursor, against "The cursor". Asking for one returned and marked message closes it with no new parameter; a run that finds nothing new only waits one more run to move the cursor, and nothing is lost.
+- Command: build
+
+### A10. `auth-o365` replaces an unreadable token file instead of refusing
+- Other option: stop with an error that tells the user to delete the file.
+- Why: `auth-o365` is the repair every other token error names, so it must work on the file those errors report; a corrupt cache holds no sign-in to keep.
+- Command: build

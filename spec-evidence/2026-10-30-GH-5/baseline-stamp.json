@@ -1,0 +1,33 @@
+{
+  "result": "green",
+  "mode": "baseline",
+  "expected_layers": [
+    "tests",
+    "secrets"
+  ],
+  "completed_layers": [
+    "tests",
+    "secrets"
+  ],
+  "layer_seconds": {
+    "tests": 16.282,
+    "secrets": 0.877
+  },
+  "layers": {
+    "tests": {
+      "baseline": "rebuilt",
+      "selection": "off",
+      "baseline_reason": "dirty"
+    },
+    "secrets": {
+      "baseline": "rebuilt",
+      "selection": "off",
+      "baseline_reason": "dirty"
+    }
+  },
+  "failed": null,
+  "exit_code": 0,
+  "commit": "bf69bc93f343c82f30d02a4683b6284ca9496e7b",
+  "dirty": true,
+  "written": "2026-10-30T20:56:04.929Z"
+}
