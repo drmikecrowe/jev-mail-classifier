@@ -1,0 +1,10 @@
+[Unit]
+Description=Run jev-mail every 15 minutes
+
+[Timer]
+# OnCalendar, not OnUnitActiveSec: Persistent= only works with OnCalendar, and it runs a missed slot after sleep.
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
