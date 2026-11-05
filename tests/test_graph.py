@@ -298,6 +298,22 @@ def test_fetch_follows_the_next_link_as_given(tmp_path):
     assert str(fake.list_requests()[1].url) == next_link
 
 
+def test_fetch_senders_reads_every_folder_and_stops_at_the_limit(tmp_path):
+    headers = [{"name": "List-Unsubscribe", "value": "<u>"}]
+    page = {
+        "value": [message("m2", "2026-10-30T10:00:00Z", internetMessageHeaders=headers), message("m1", "2026-10-30T09:00:00Z")],
+        "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc",
+    }
+    fake = FakeGraph(routes={("GET", "/me/messages"): page})
+
+    with graph_mailbox(fake, tmp_path) as mailbox:
+        rows = mailbox.fetch_senders(limit=1)
+
+    assert len(fake.requests) == 1
+    assert fake.requests[0].url.params["$select"] == "from,internetMessageHeaders"
+    assert rows == [("Sender <sender@example.com>", "<u>")]
+
+
 # --- S3. Actions -----------------------------------------------------------
 
 

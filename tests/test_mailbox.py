@@ -15,7 +15,7 @@ def _raw_message(subject: str, body: str) -> bytes:
 def test_fetch_unprocessed_parses_subject_and_body():
     fake_server = MagicMock()
     fake_server.search.return_value = [1]
-    fake_server.fetch.return_value = {1: {b"RFC822": _raw_message("Hello", "World")}}
+    fake_server.fetch.return_value = {1: {b"BODY[]": _raw_message("Hello", "World")}}
 
     with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server) as mailbox:
         emails = mailbox.fetch_unprocessed()
@@ -38,7 +38,7 @@ def test_fetch_unprocessed_sorts_newest_first_before_limit():
     with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server) as mailbox:
         mailbox.fetch_unprocessed(limit=2)
 
-    fake_server.fetch.assert_called_once_with([5, 4], ["RFC822"])
+    fake_server.fetch.assert_called_once_with([5, 4], ["BODY.PEEK[]"])
 
 
 def test_fetch_unprocessed_no_limit_still_sorts_newest_first():
@@ -49,7 +49,7 @@ def test_fetch_unprocessed_no_limit_still_sorts_newest_first():
     with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server) as mailbox:
         mailbox.fetch_unprocessed()
 
-    fake_server.fetch.assert_called_once_with([3, 2, 1], ["RFC822"])
+    fake_server.fetch.assert_called_once_with([3, 2, 1], ["BODY.PEEK[]"])
 
 
 def test_fetch_unprocessed_returns_empty_when_no_uids():
@@ -200,7 +200,7 @@ def test_fetch_unprocessed_reads_message_id_sender_and_list_unsubscribe():
     )
     fake_server = MagicMock()
     fake_server.search.return_value = [1]
-    fake_server.fetch.return_value = {1: {b"RFC822": raw}}
+    fake_server.fetch.return_value = {1: {b"BODY[]": raw}}
 
     with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server) as mailbox:
         (mail,) = mailbox.fetch_unprocessed()
@@ -216,7 +216,7 @@ def test_missing_headers_are_empty_strings():
 
     fake_server = MagicMock()
     fake_server.search.return_value = [1]
-    fake_server.fetch.return_value = {1: {b"RFC822": b"Subject: Hello\r\n\r\nWorld\r\n"}}
+    fake_server.fetch.return_value = {1: {b"BODY[]": b"Subject: Hello\r\n\r\nWorld\r\n"}}
 
     with Mailbox(MailboxConfig(host="imap.example.com"), server=fake_server) as mailbox:
         (mail,) = mailbox.fetch_unprocessed()

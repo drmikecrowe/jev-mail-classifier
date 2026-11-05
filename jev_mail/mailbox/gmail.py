@@ -74,6 +74,50 @@ class GmailMailbox:
             )
         return emails
 
+    def fetch_senders(self, limit: int | None = None) -> list[tuple[str, str]]:
+        """(From, List-Unsubscribe) of the newest `limit` messages under any label, for `census`."""
+        rows = []
+        # shortcut: one metadata get per message, slow past a few thousand; upgrade to a batch request then.
+        for uid in self._list_ids(limit):
+            got = _execute(
+                self._messages().get(userId="me", id=uid, format="metadata", metadataHeaders=["From", "List-Unsubscribe"])
+            )
+            headers = {h["name"].lower(): h["value"] for h in got.get("payload", {}).get("headers", [])}
+            rows.append((headers.get("from", ""), headers.get("list-unsubscribe", "")))
+        return rows
+
+    def folder_mail(self, folder: str, marker: str) -> list[tuple[int | str, str, bool]]:
+        """(id, From, carries the `marker` label) for every message under the `folder` label, for `clean`."""
+        if folder not in self._labels:
+            return []
+        marker_id = self._labels.get(marker)
+        rows = []
+        for uid in self._list_ids(None, labelIds=[self._labels[folder]]):
+            got = _execute(self._messages().get(userId="me", id=uid, format="metadata", metadataHeaders=["From"]))
+            headers = {h["name"].lower(): h["value"] for h in got.get("payload", {}).get("headers", [])}
+            rows.append((uid, headers.get("from", ""), marker_id is not None and marker_id in got.get("labelIds", [])))
+        return rows
+
+    def trash(self, folder: str, uids: list[int | str]) -> None:
+        for uid in uids:
+            _execute(self._messages().trash(userId="me", id=uid))
+
+    def _list_ids(self, limit: int | None, **query) -> list[str]:
+        """Message ids, newest first, across every page of messages.list, up to `limit`."""
+        ids: list[str] = []
+        page_token = None
+        while limit is None or len(ids) < limit:
+            listed = _execute(
+                self._messages().list(
+                    userId="me", maxResults=MAX_RESULTS, **query, **({"pageToken": page_token} if page_token else {})
+                )
+            )
+            ids += [ref["id"] for ref in listed.get("messages", [])]
+            page_token = listed.get("nextPageToken")
+            if not page_token:
+                break
+        return ids[:limit]
+
     def mark_processed(self, uid: int | str) -> None:
         self._modify(uid, add=[self._label_id(PROCESSED_LABEL)])
 

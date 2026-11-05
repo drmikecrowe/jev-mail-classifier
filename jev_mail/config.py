@@ -65,6 +65,8 @@ class MailboxConfig:
     tls: str = "ssl"
     tls_ca_file: str = ""
     backend: str = "imap"
+    # Prepended to every `move` folder, so one category list fits accounts with different folder trees.
+    folder_prefix: str = ""
 
 
 @dataclass
@@ -167,6 +169,7 @@ def _load_account(mb_raw: dict, env: dict, label: str) -> MailboxConfig:
         tls=mb_raw.get("tls", "ssl"),
         tls_ca_file=mb_raw.get("tls_ca_file", ""),
         backend=mb_raw.get("backend", "imap"),
+        folder_prefix=mb_raw.get("folder_prefix", ""),
     )
     if mailbox.backend not in BACKENDS:
         raise ConfigError(f"{label}.backend must be one of {', '.join(BACKENDS)}, got {mailbox.backend!r}")
@@ -195,6 +198,7 @@ def save_config(config: AppConfig, config_path: str | Path) -> None:
         "max_emails_per_run": config.mailbox.max_emails_per_run,
         "tls": config.mailbox.tls,
         "tls_ca_file": config.mailbox.tls_ca_file,
+        **({"folder_prefix": config.mailbox.folder_prefix} if config.mailbox.folder_prefix else {}),
     }
     raw = {
         **(

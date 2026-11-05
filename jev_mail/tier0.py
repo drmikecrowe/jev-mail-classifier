@@ -17,7 +17,8 @@ OTP_SUBJECT = re.compile(
 )
 NOREPLY_LOCAL_PARTS = ("noreply", "no-reply", "donotreply")
 # The category each verdict gives; `keep` gives none and sends the email to Jev.
-VERDICTS = {"unsubscribe": "BULK", "auto-archive": "MONITOR", "keep": None}
+# `route` gives the row's `category` column; the table stores that category name in place of "route".
+VERDICTS = {"unsubscribe": "BULK", "auto-archive": "MONITOR", "keep": None, "route": None}
 
 
 def sender_address(value: str) -> str:
@@ -41,13 +42,17 @@ def load_senders(path: str | Path) -> dict[str, str]:
             verdict = (row["verdict"] or "").strip()
             if verdict not in VERDICTS:
                 raise ConfigError(
-                    f"{path.name} line {reader.line_num}: unknown verdict {verdict!r} (use unsubscribe, auto-archive or keep)"
+                    f"{path.name} line {reader.line_num}: unknown verdict {verdict!r} (use unsubscribe, auto-archive, keep or route)"
                 )
             sender = sender_address(raw_sender)
             if not sender:
                 raise ConfigError(f"{path.name} line {reader.line_num}: {raw_sender!r} is not an email address")
             if sender in table:
                 raise ConfigError(f"{path.name} line {reader.line_num}: {sender} is listed twice")
+            if verdict == "route":
+                verdict = (row.get("category") or "").strip()
+                if not verdict:
+                    raise ConfigError(f"{path.name} line {reader.line_num}: a route row needs a category")
             table[sender] = verdict
     return table
 
@@ -61,7 +66,7 @@ def decide(mail: Email, senders: dict[str, str], config: AppConfig) -> tuple[Cat
         return None
     local, at, _ = address.partition("@")
     rules = (
-        (VERDICTS.get(verdict or ""), "census"),
+        (VERDICTS.get(verdict, verdict) if verdict else None, "census"),
         ("MONITOR" if OTP_SUBJECT.search(mail.subject) else None, "heuristic"),
         ("BULK" if mail.list_unsubscribe.strip() else None, "heuristic"),
         ("MONITOR" if at and local in NOREPLY_LOCAL_PARTS else None, "heuristic"),

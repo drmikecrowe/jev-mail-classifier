@@ -320,6 +320,21 @@ def test_accounts_list_loads_every_account(tmp_path, monkeypatch):
     assert (second.tls, second.port) == ("starttls", 1143)
 
 
+def test_folder_prefix_loads_per_account_and_survives_save(tmp_path, monkeypatch):
+    monkeypatch.setenv("IMAP_USERNAME", "a@example.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "")
+    config = _load(
+        tmp_path,
+        "accounts:\n  - backend: o365\n    username: a@example.com\n    folder_prefix: Folders/\n"
+        "  - backend: o365\n    username: b@example.com\n"
+        "categories:\n  BILLING:\n    description: bill\n",
+    )
+
+    assert [a.folder_prefix for a in config.accounts] == ["Folders/", ""]
+    save_config(config, tmp_path / "config.yaml")
+    assert load_config(tmp_path / "config.yaml").mailbox.folder_prefix == "Folders/"
+
+
 def test_mailbox_and_accounts_together_is_refused(tmp_path):
     """S2.3"""
     text = "mailbox:\n  host: x\naccounts:\n  - host: y\ncategories:\n  a:\n    description: a\n"

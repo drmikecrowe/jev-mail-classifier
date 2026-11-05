@@ -26,6 +26,7 @@ PROCESSED_CATEGORY = "JevProcessed"
 # Immutable ids survive a move, so mark_processed after move finds the message (A1).
 PREFER = 'outlook.body-content-type="text", IdType="ImmutableId"'
 LIST_PATH = "/me/mailFolders/inbox/messages"
+ALL_MAIL_PATH = "/me/messages"
 SELECT = "id,subject,body,from,internetMessageId,categories,receivedDateTime,internetMessageHeaders"
 PAGE_SIZE = 50
 
@@ -94,6 +95,40 @@ class GraphMailbox:
         # A fetch that returned nothing moves no cursor, so a dry run never writes one (A9).
         self._pending = (newest, {m.uid for m in emails}) if complete and emails and newest else None
         return emails
+
+    def fetch_senders(self, limit: int | None = None) -> list[tuple[str, str]]:
+        """(From, List-Unsubscribe) of the newest `limit` messages in every folder, for `census`."""
+        params: dict | None = {"$select": "from,internetMessageHeaders", "$orderby": "receivedDateTime desc", "$top": str(PAGE_SIZE)}
+        url: str | None = ALL_MAIL_PATH
+        rows: list[tuple[str, str]] = []
+        while url and (limit is None or len(rows) < limit):
+            page = self._request("GET", url, params=params)
+            url, params = page.get("@odata.nextLink"), None
+            for item in page.get("value", []):
+                mail = self._email({"id": "", **item})
+                rows.append((mail.sender, mail.list_unsubscribe))
+        return rows[:limit]
+
+    def folder_mail(self, folder: str, marker: str) -> list[tuple[int | str, str, bool]]:
+        """(id, From, carries the `marker` category) for every message in the top-level `folder`, for `clean`."""
+        escaped = folder.replace("'", "''")
+        found = self._request("GET", "/me/mailFolders", params={"$filter": f"displayName eq '{escaped}'"}).get("value")
+        if not found:
+            return []
+        params: dict | None = {"$select": "id,from,categories", "$top": str(PAGE_SIZE)}
+        url: str | None = f"/me/mailFolders/{found[0]['id']}/messages"
+        rows: list[tuple[int | str, str, bool]] = []
+        while url:
+            page = self._request("GET", url, params=params)
+            url, params = page.get("@odata.nextLink"), None
+            for item in page.get("value", []):
+                rows.append((item["id"], self._email(item).sender, marker in (item.get("categories") or [])))
+        return rows
+
+    def trash(self, folder: str, uids: list[int | str]) -> None:
+        for uid in uids:
+            # A well-known folder name is a valid destinationId.
+            self._request("POST", f"{_message_path(uid)}/move", json={"destinationId": "deleteditems"})
 
     def mark_processed(self, uid: int | str) -> None:
         self.add_tag(uid, PROCESSED_CATEGORY)

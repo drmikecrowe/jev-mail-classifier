@@ -321,7 +321,7 @@ def test_watch_writes_a_state_row_after_the_keyword(tmp_path, monkeypatch):
 
 
 def test_dry_run_output_is_unchanged(tmp_path, monkeypatch, capsys):
-    """S5.1: the expected string is the dry-run output at e393a22."""
+    """S5.1: the expected string is the dry-run output at e393a22, plus the GH-6 summary line."""
     (tmp_path / "config.yaml").write_text("mailbox:\n  host: imap.example.com\n" + INVOICE_CATEGORIES)
     fake = _fake_mailbox_class([Email(uid=2, subject="Invoice #1", body="b"), Email(uid=1, subject="Newsletter", body="b")])
     monkeypatch.setattr(cli, "Mailbox", fake)
@@ -333,7 +333,30 @@ def test_dry_run_output_is_unchanged(tmp_path, monkeypatch, capsys):
         "[dry-run] 'Invoice #1': Invoice (0.90) -> tag\n"
         "[dry-run] 'Invoice #1': Invoice (0.90) -> move\n"
         "[dry-run] 'Newsletter': no category matched\n"
+        "[jev-mail] imap.example.com/: 2 fetched, 0 tier0, 2 jev, 2 actions (dry run), 0 failed\n"
     )
+
+
+def test_run_goes_on_past_an_unreachable_account_and_exits_1(tmp_path, monkeypatch, capsys):
+    """GH-6: one account down does not skip the others."""
+    (tmp_path / "config.yaml").write_text(
+        "accounts:\n  - host: down.example.com\n  - host: up.example.com\n" + INVOICE_CATEGORIES
+    )
+    good = _fake_mailbox_class([Email(uid=1, subject="Invoice #1", body="b")])
+
+    def mailbox(account, *args, **kwargs):
+        if account.host == "down.example.com":
+            raise OSError("connection refused")
+        return good(account, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "Mailbox", mailbox)
+    monkeypatch.setattr(cli, "get_jev_client", lambda *a, **k: _fake_client({"Invoice": 0.9}))
+
+    assert cli.cmd_run(_args(tmp_path, "run", "--dry-run")) == 1
+
+    captured = capsys.readouterr()
+    assert "couldn't connect to down.example.com:993 -- connection refused" in captured.err
+    assert "[jev-mail] up.example.com/: 1 fetched, 0 tier0, 1 jev, 2 actions (dry run), 0 failed\n" in captured.out
 
 
 # GH-8: one ProviderError on one email does not abort the run.

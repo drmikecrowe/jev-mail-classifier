@@ -6,11 +6,13 @@ from jev_mail.config import Action
 from jev_mail.mailbox import Email, MailBackend
 
 
-def run_action(mailbox: MailBackend, mail: Email, action: Action, category_name: str, probability: float) -> None:
+def run_action(
+    mailbox: MailBackend, mail: Email, action: Action, category_name: str, probability: float, folder_prefix: str = ""
+) -> None:
     if action.type == "tag":
         mailbox.add_tag(mail.uid, action.value)
     elif action.type == "move":
-        mailbox.move(mail.uid, action.folder)
+        mailbox.move(mail.uid, folder_prefix + action.folder)
     elif action.type == "flag":
         mailbox.set_flag(mail.uid, True)
     elif action.type == "unflag":

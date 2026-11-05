@@ -122,13 +122,27 @@ def test_load_senders_normalizes_and_skips_blank_senders(tmp_path):
     assert tier0.load_senders(path) == {"news@example.com": "unsubscribe", "ann@example.com": "keep"}
 
 
+def test_route_sender_goes_to_its_category_before_list_unsubscribe(tmp_path):
+    path = _senders(tmp_path, "sender,verdict,seen,category", "notifications@example.com,route,1,GITHUB")
+    mail = Email(uid=1, subject="PR", body="b", sender="notifications@example.com", list_unsubscribe="<mailto:u@example.com>")
+
+    assert _decided(tier0.decide(mail, tier0.load_senders(path), _config("GITHUB", "BULK"))) == ("GITHUB", "census")
+
+
+def test_load_senders_refuses_a_route_row_without_a_category(tmp_path):
+    path = _senders(tmp_path, "sender,verdict,seen,category", "a@example.com,route,1,")
+
+    with pytest.raises(ConfigError, match="line 2: a route row needs a category"):
+        tier0.load_senders(path)
+
+
 def test_load_senders_refuses_an_unknown_verdict(tmp_path):
     """S2.2"""
     path = _senders(tmp_path, "sender,verdict", "a@example.com,keep", "b@example.com,archive")
 
     with pytest.raises(ConfigError) as exc:
         tier0.load_senders(path)
-    assert str(exc.value) == "senders.csv line 3: unknown verdict 'archive' (use unsubscribe, auto-archive or keep)"
+    assert str(exc.value) == "senders.csv line 3: unknown verdict 'archive' (use unsubscribe, auto-archive, keep or route)"
 
 
 def test_load_senders_refuses_a_sender_listed_twice(tmp_path):

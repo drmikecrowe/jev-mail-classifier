@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import dataclasses
 import imaplib
 import sys
 import time
 from pathlib import Path
 
-from jev_mail import tier0
+from jev_mail import census, tier0
 from jev_mail.actions import run_action
 from jev_mail.classify import classify, matched_categories
 from jev_mail.config import AppConfig, ConfigError, MailboxConfig, load_config
@@ -18,6 +19,10 @@ from jev_mail.mailbox.graph import authorize_o365
 from jev_mail.providers import ProviderError, get_jev_client
 from jev_mail.providers.base import JevClient
 from jev_mail.state import State
+
+
+# The label (Proton, Gmail) or category (Office 365) you put on a BULK email after unsubscribing from its sender.
+UNSUBSCRIBE_MARKER = "Unsubscribe"
 
 
 def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -39,9 +44,10 @@ def _process_unprocessed(
     state: State | None = None,
     senders: dict[str, str] | None = None,
     review=None,
+    summary: bool = False,
 ) -> int:
     """Process one batch; return the number of emails whose classify raised ProviderError.
-    `review` is a csv.writer that gets one row per decided email."""
+    `review` is a csv.writer that gets one row per decided email; `summary` prints one count line at the end."""
     account = account or config.mailbox
     account_key = f"{account.host}/{account.username}"
     emails = mailbox.fetch_unprocessed(limit=account.max_emails_per_run)
@@ -50,10 +56,11 @@ def _process_unprocessed(
             f"[jev-mail] hit max_emails_per_run ({account.max_emails_per_run}) -- "
             "there may be more unprocessed mail left for next run"
         )
-    failed = 0
+    failed = tier0_count = jev_count = action_count = 0
     for mail in emails:
         hit = tier0.decide(mail, senders or {}, config)
         if hit is not None:
+            tier0_count += 1
             category, source = hit
             probabilities = {category.name: 1.0}
             matched = [category]
@@ -66,6 +73,7 @@ def _process_unprocessed(
                 print(f"error: email uid {mail.uid}: {exc} -- left unprocessed, will retry next run", file=sys.stderr)
                 failed += 1
                 continue
+            jev_count += 1
             matched = matched_categories(config, probabilities)
         if review is not None:
             review.writerow(
@@ -91,10 +99,11 @@ def _process_unprocessed(
                     if moved or category.name != move_owner:
                         continue
                     moved = True
+                action_count += 1
                 if dry_run:
                     print(f"[dry-run] {mail.subject!r}: {category.name} ({label}) -> {action.type}")
                 else:
-                    run_action(mailbox, mail, action, category.name, probability)
+                    run_action(mailbox, mail, action, category.name, probability, account.folder_prefix)
                     applied.append({"category": category.name, **action.to_dict()})
 
         # Mark processed even when nothing matched -- otherwise a never-matching
@@ -104,6 +113,11 @@ def _process_unprocessed(
             # The keyword stays the source of truth; the state row is only written after it.
             if state is not None:
                 state.record(account_key, mail, source, probabilities, applied)
+    if summary:
+        print(
+            f"[jev-mail] {account_key}: {len(emails)} fetched, {tier0_count} tier0, {jev_count} jev, "
+            f"{action_count} actions{' (dry run)' if dry_run else ''}, {failed} failed"
+        )
     return failed
 
 
@@ -172,11 +186,20 @@ def cmd_run(args: argparse.Namespace) -> int:
                     if state is None and not args.dry_run:
                         state = State(config_path.parent / "state.db")
                     failed += _process_unprocessed(
-                        mailbox, client, config, args.dry_run, account=account, state=state, senders=senders, review=review
+                        mailbox,
+                        client,
+                        config,
+                        args.dry_run,
+                        account=account,
+                        state=state,
+                        senders=senders,
+                        review=review,
+                        summary=True,
                     )
             except (OSError, imaplib.IMAP4.error, ConfigError, GmailError, GraphError) as exc:
+                # One account down (say, Proton Bridge not running) must not skip the others (GH-6).
                 print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
-                return 1
+                failed += 1
     return 1 if failed else 0
 
 
@@ -209,6 +232,74 @@ def cmd_watch(args: argparse.Namespace) -> int:
     except (OSError, imaplib.IMAP4.error, ConfigError, GmailError, GraphError) as exc:
         print(f"error: {_mailbox_error_message(exc, config.mailbox)}", file=sys.stderr)
         return 1
+
+
+def cmd_census(args: argparse.Namespace) -> int:
+    config_path, env_path = _paths(args)
+    try:
+        config = load_config(config_path, env_path)
+        senders = _load_senders(config_path, config)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    rows: list[tuple[str, str]] = []
+    for account in config.accounts:
+        if args.folder and account.backend == "imap":
+            account = dataclasses.replace(account, folder=args.folder)
+        try:
+            with _open_mailbox(account, config_path.parent) as mailbox:
+                found = mailbox.fetch_senders(args.limit)
+        except (OSError, imaplib.IMAP4.error, ConfigError, GmailError, GraphError) as exc:
+            print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
+            return 1
+        print(f"[census] {account.host}/{account.username}: {len(found)} emails")
+        rows += found
+
+    table = census.tally(rows, senders)
+    out = config_path.parent / "sender-census.csv"
+    with out.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(census.COLUMNS)
+        writer.writerows(table)
+    suggested = sum(1 for row in table if row[-1])
+    print(f"[census] wrote {len(table)} senders to {out}; {suggested} suggested for unsubscribe")
+    return 0
+
+
+def cmd_clean(args: argparse.Namespace) -> int:
+    """Trashes every BULK email from a sender with at least one BULK email carrying the UNSUBSCRIBE_MARKER label."""
+    config_path, env_path = _paths(args)
+    try:
+        config = load_config(config_path, env_path)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    bulk = next((c for c in config.categories if c.name == "BULK"), None)
+    folder = next((a.folder for a in bulk.actions if a.type == "move"), None) if bulk else None
+    if not folder:
+        print("error: clean needs a BULK category with a move action", file=sys.stderr)
+        return 1
+
+    failed = 0
+    for account in config.accounts:
+        bulk_folder = account.folder_prefix + folder
+        try:
+            with _open_mailbox(account, config_path.parent) as mailbox:
+                mail = mailbox.folder_mail(bulk_folder, UNSUBSCRIBE_MARKER)
+                marked = {tier0.sender_address(sender) for _, sender, is_marked in mail if is_marked} - {""}
+                doomed = [(uid, tier0.sender_address(sender)) for uid, sender, _ in mail if tier0.sender_address(sender) in marked]
+                for address in sorted(marked):
+                    count = sum(1 for _, a in doomed if a == address)
+                    print(f"[{'dry-run' if args.dry_run else 'clean'}] {address}: {count} emails in {bulk_folder} -> Trash")
+                if doomed and not args.dry_run:
+                    mailbox.trash(bulk_folder, [uid for uid, _ in doomed])
+        except (OSError, imaplib.IMAP4.error, ConfigError, GmailError, GraphError) as exc:
+            print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
+            failed += 1
+            continue
+        print(f"[clean] {account.host}/{account.username}: {len(marked)} senders, {len(doomed)} emails")
+    return 1 if failed else 0
 
 
 def cmd_auth_gmail(args: argparse.Namespace) -> int:
@@ -245,6 +336,15 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser = subparsers.add_parser("watch", help="keep classifying new mail as it arrives")
     watch_parser.add_argument("--dry-run", action="store_true", help="classify and print, without applying any action")
 
+    census_parser = subparsers.add_parser("census", help="count each sender's mail from headers, no Jev call, into sender-census.csv")
+    census_parser.add_argument("--limit", type=int, default=2000, help="newest emails to read per account (default: 2000)")
+    census_parser.add_argument("--folder", help="IMAP folder to read in place of the account's folder, e.g. 'All Mail'")
+
+    clean_parser = subparsers.add_parser(
+        "clean", help=f"trash BULK mail from every sender you marked with the {UNSUBSCRIBE_MARKER!r} label"
+    )
+    clean_parser.add_argument("--dry-run", action="store_true", help="list what would be trashed, without moving anything")
+
     subparsers.add_parser("auth-gmail", help="sign in to Gmail once and save the token beside config.yaml")
     subparsers.add_parser("auth-o365", help="sign in to Office 365 once and save the token beside config.yaml")
 
@@ -265,6 +365,8 @@ def main() -> None:
         "configure": cmd_configure,
         "run": cmd_run,
         "watch": cmd_watch,
+        "census": cmd_census,
+        "clean": cmd_clean,
         "auth-gmail": cmd_auth_gmail,
         "auth-o365": cmd_auth_o365,
     }

@@ -61,5 +61,6 @@ class MailboxScreen(Screen[MailboxConfig]):
                 tls=self._mailbox.tls,
                 tls_ca_file=self._mailbox.tls_ca_file,
                 backend=self._mailbox.backend,
+                folder_prefix=self._mailbox.folder_prefix,
             )
         )

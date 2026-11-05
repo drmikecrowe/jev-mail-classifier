@@ -70,6 +70,12 @@ def test_run_action_drives_any_mail_backend():
     ]
 
 
+def test_run_action_move_prepends_the_folder_prefix():
+    mailbox = MagicMock()
+    run_action(mailbox, MAIL, Action(type="move", folder="BILLING"), "BILLING", 0.9, "Folders/")
+    mailbox.move.assert_called_once_with(1, "Folders/BILLING")
+
+
 def test_run_action_unknown_type_raises():
     with pytest.raises(ValueError):
         run_action(MagicMock(), MAIL, Action(type="bogus"), "invoice", 0.9)

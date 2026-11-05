@@ -6,6 +6,7 @@ from email.header import decode_header
 from email.message import Message
 
 from imapclient import IMAPClient
+from imapclient.imapclient import TRASH
 
 from jev_mail.config import MailboxConfig
 from jev_mail.mailbox.base import Email
@@ -58,10 +59,11 @@ class Mailbox:
         uids = sorted(uids, reverse=True)
         if limit is not None:
             uids = uids[:limit]
-        response = self._server.fetch(uids, ["RFC822"])
+        # PEEK: fetching RFC822 or BODY[] sets \Seen (RFC 3501), and processed mail must stay unread.
+        response = self._server.fetch(uids, ["BODY.PEEK[]"])
         emails = []
         for uid, data in response.items():
-            msg = email.message_from_bytes(data[b"RFC822"])
+            msg = email.message_from_bytes(data[b"BODY[]"])
             emails.append(
                 Email(
                     uid=uid,
@@ -73,6 +75,50 @@ class Mailbox:
                 )
             )
         return emails
+
+    def fetch_senders(self, limit: int | None = None) -> list[tuple[str, str]]:
+        """(From, List-Unsubscribe) of the newest `limit` messages in the folder, processed or not, for `census`."""
+        uids = sorted(self._server.search(["ALL"]), reverse=True)[:limit]
+        rows = []
+        for start in range(0, len(uids), 500):
+            response = self._server.fetch(uids[start : start + 500], ["BODY.PEEK[HEADER.FIELDS (FROM LIST-UNSUBSCRIBE)]"])
+            for data in response.values():
+                # The server answers under BODY[...], not the BODY.PEEK[...] key that was asked for.
+                header = next(value for key, value in data.items() if key.startswith(b"BODY["))
+                msg = email.message_from_bytes(header)
+                rows.append((_decode_header(msg, "From"), _decode_header(msg, "List-Unsubscribe")))
+        return rows
+
+    def folder_mail(self, folder: str, marker: str) -> list[tuple[int | str, str, bool]]:
+        """(uid, From, carries `marker`) for every message in `folder`, for `clean`. Leaves `folder` selected.
+        A Proton label is the IMAP folder Labels/<marker>, so a message is marked when its Message-ID is there too."""
+        # shortcut: Proton labels only, not an IMAP keyword; read a keyword too when a non-Proton server needs it.
+        names = {name for _, _, name in self._server.list_folders()}
+        if folder not in names:
+            return []
+        marked_ids: set[str] = set()
+        if f"Labels/{marker}" in names:
+            self._server.select_folder(f"Labels/{marker}", readonly=True)
+            marked_ids = {_decode_header(msg, "Message-ID") for _, msg in self._headers("MESSAGE-ID")} - {""}
+        self._server.select_folder(folder)
+        return [
+            (uid, _decode_header(msg, "From"), _decode_header(msg, "Message-ID") in marked_ids)
+            for uid, msg in self._headers("FROM MESSAGE-ID")
+        ]
+
+    def trash(self, folder: str, uids: list[int | str]) -> None:
+        self._server.select_folder(folder)
+        self._server.move(uids, self._server.find_special_folder(TRASH) or "Trash")
+
+    def _headers(self, fields: str) -> list[tuple[int, Message]]:
+        uids = self._server.search(["ALL"])
+        out = []
+        for start in range(0, len(uids), 500):
+            response = self._server.fetch(uids[start : start + 500], [f"BODY.PEEK[HEADER.FIELDS ({fields})]"])
+            for uid, data in response.items():
+                header = next(value for key, value in data.items() if key.startswith(b"BODY["))
+                out.append((uid, email.message_from_bytes(header)))
+        return out
 
     def mark_processed(self, uid: int) -> None:
         self._server.add_flags([uid], [PROCESSED_KEYWORD])

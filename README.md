@@ -127,10 +127,12 @@ an app password is safer since it can be revoked without changing your main pass
 Over IMAP, a Gmail `tag` is a keyword that the Gmail web UI never shows. With the Gmail API backend, a `tag` is a real Gmail label. It needs no app password.
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Gmail API** for it.
-2. Under **Google Auth Platform**, set up the consent screen as **External** and add your Gmail address as a **test user**.
-3. Create an OAuth client of type **Desktop app**, download its JSON, and save it as `client_secrets.json` beside `config.yaml`.
-4. Run `./jev-mail auth-gmail` once. It opens a browser for the sign-in and saves `gmail-token.json` beside `config.yaml`, readable by you only. Both files are git-ignored; never commit them.
-5. In `config.yaml`, give the account `backend: gmail`. It needs no host or password:
+2. Under **Google Auth Platform**, set up the consent screen as **External**.
+3. On the **Branding** page, fill in the app name, a support email, and three links: the home page, the privacy policy and the terms of service. Links to your fork work: `https://github.com/<you>/jev-mail-classifier`, and the [`PRIVACY.md`](PRIVACY.md) and [`TERMS.md`](TERMS.md) files in it. Under **Authorized domains**, add `github.com`. Save.
+4. On the **Audience** page, click **Publish app** to move it from "Testing" to "In production". Google does not need to verify an app that only you use. A "Testing" app also works, but Google expires its sign-in after 7 days, and every run then fails with `invalid_grant` until you run `auth-gmail` again.
+5. Create an OAuth client of type **Desktop app**, download its JSON, and save it as `client_secrets.json` beside `config.yaml`.
+6. Run `./jev-mail auth-gmail` once. It opens a browser for the sign-in and saves `gmail-token.json` beside `config.yaml`, readable by you only. Both files are git-ignored; never commit them. Google shows "Google hasn't verified this app": click **Advanced**, then **Go to** your app. Google allows up to 100 users of an unverified app.
+7. In `config.yaml`, give the account `backend: gmail`. It needs no host or password:
 
 ```yaml
 mailbox:
@@ -263,6 +265,32 @@ outside the project directory, because the rows hold real subjects.
 | `mark_read`   | Sets `\Seen`                                     |
 | `mark_unread` | Clears it                                        |
 | `webhook`     | `POST`s `{category, probability, subject}` to a URL |
+
+## Growing the sender table and clearing BULK
+
+`./jev-mail census` reads the From and List-Unsubscribe headers of the newest 2000 emails per account (`--limit`), with no Jev call, and writes `sender-census.csv` beside `config.yaml`. Each row is one sender: emails seen, emails with List-Unsubscribe, whether it is a noreply address, and its current verdict. A sender not in your table with 10 or more emails, 90% of them with List-Unsubscribe, gets `unsubscribe` in the `suggest` column. Copy the rows you agree with into `senders.csv`; `census` never writes it. On IMAP, `--folder "All Mail"` reads every folder.
+
+After you unsubscribe from a sender, put the label `Unsubscribe` on one of its emails in BULK (an Outlook category on Office 365). `./jev-mail clean` then moves every BULK email from that sender to Trash. `--dry-run` lists the senders and counts first.
+
+## Run it on a timer
+
+`run` processes every account in turn. When one account cannot connect (for example, Proton Bridge is not running), `run` prints the error, goes on to the next account, and exits with code 1 at the end. It prints one line per account: emails fetched, decided by Tier 0, decided by Jev, actions, and failures.
+
+To run it every 15 minutes as a systemd user timer:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp docs/systemd/jev-mail.service docs/systemd/jev-mail.timer ~/.config/systemd/user/
+# If the repository is not at ~/jev-mail-classifier, change the ExecStart path in jev-mail.service.
+systemctl --user daemon-reload
+systemctl --user start jev-mail.service     # one run now, to check it
+journalctl --user -u jev-mail.service -n 20
+systemctl --user enable --now jev-mail.timer
+```
+
+A systemd unit cannot unlock a password manager. If your secrets do not live in `.env`, write them once to `~/.local/share/jev-mail/env` (mode `0600`, `KEY="value"` lines); the unit reads that file when it exists. Rewrite it when a secret changes.
+
+The timer keeps running after you log out only if lingering is on (`loginctl enable-linger`). A run missed while the laptop sleeps starts when it wakes.
 
 ## Three ways to power it
 

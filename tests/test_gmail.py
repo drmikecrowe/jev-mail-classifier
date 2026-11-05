@@ -88,6 +88,27 @@ def test_fetch_with_no_messages_returns_empty_and_gets_nothing():
     _messages(service).get.assert_not_called()
 
 
+def test_fetch_senders_pages_through_all_mail_and_reads_metadata_headers():
+    service = _service([INBOX])
+    _messages(service).list.return_value.execute.side_effect = [
+        {"messages": [{"id": "c3"}, {"id": "b2"}], "nextPageToken": "p2"},
+        {"messages": [{"id": "a1"}]},
+    ]
+    headers = [{"name": "From", "value": "Billing <billing@example.com>"}, {"name": "List-Unsubscribe", "value": "<u>"}]
+    _messages(service).get.return_value.execute.return_value = {"payload": {"headers": headers}}
+
+    rows = _open(service).fetch_senders(limit=3)
+
+    assert [c.kwargs for c in _messages(service).list.call_args_list] == [
+        {"userId": "me", "maxResults": 500},
+        {"userId": "me", "maxResults": 500, "pageToken": "p2"},
+    ]
+    assert _messages(service).get.call_args_list[0].kwargs == {
+        "userId": "me", "id": "c3", "format": "metadata", "metadataHeaders": ["From", "List-Unsubscribe"]
+    }
+    assert rows == [("Billing <billing@example.com>", "<u>")] * 3
+
+
 def test_unknown_watched_label_is_a_config_error():
     """S1.3"""
     with pytest.raises(ConfigError, match="Work"):
