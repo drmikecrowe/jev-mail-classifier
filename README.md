@@ -266,19 +266,56 @@ outside the project directory, because the rows hold real subjects.
 | `mark_unread` | Clears it                                        |
 | `webhook`     | `POST`s `{category, probability, subject}` to a URL |
 
-## Growing the sender table and clearing BULK
+## Growing the sender table
 
 `./jev-mail census` reads the From and List-Unsubscribe headers of the newest 2000 emails per account (`--limit`), with no Jev call, and writes `sender-census.csv` beside `config.yaml`. Each row is one sender: emails seen, emails with List-Unsubscribe, whether it is a noreply address, and its current verdict. A sender not in your table with 10 or more emails, 90% of them with List-Unsubscribe, gets `unsubscribe` in the `suggest` column. Copy the rows you agree with into `senders.csv`; `census` never writes it. On IMAP, `--folder "All Mail"` reads every folder.
 
-To unsubscribe from a sender, put the label `Unsubscribe` on one of its emails (an Outlook category on Office 365). `./jev-mail unsubscribe` tries a one-click unsubscribe (RFC 8058: an https `List-Unsubscribe` link plus `List-Unsubscribe-Post: List-Unsubscribe=One-Click`) for each such email. On a 2xx answer it swaps the label for `Unsubscribed`. When the email has no one-click link, or the request fails, it swaps the label for `Manual-Unsubscribe`, and you unsubscribe by hand. The systemd timer below runs it after each `run`, then runs `clean`. `--dry-run` lists what it would try, and sends nothing.
+## Unsubscribing and clearing BULK
 
-`./jev-mail clean` moves every BULK email to Trash when its sender has an email in BULK with the label `Unsubscribed`. If you unsubscribe by hand, put `Unsubscribed` on one of the sender's BULK emails yourself. `--dry-run` lists the senders and counts first.
+Mark an email from a sender you no longer want. jev-mail unsubscribes you when the sender allows it, then moves all of that sender's BULK mail to Trash. When it cannot unsubscribe you, it puts the email aside for you to do by hand.
+
+### The three markers
+
+| Marker | Who sets it | Meaning |
+|---|---|---|
+| `Unsubscribe` | You | Unsubscribe me from this sender. |
+| `Unsubscribed` | `unsubscribe`, or you | Done. `clean` trashes this sender's BULK mail. |
+| `Manual-Unsubscribe` | `unsubscribe` | jev-mail could not do it. You unsubscribe by hand. |
+
+Each marker is a label, so the email stays in its folder:
+
+- **Proton (IMAP through Bridge):** a label, which Bridge shows as the folder `Labels/<name>`.
+- **Gmail:** a label. Use "Label as". Do not use "Move to", and do not drag the email onto the label. Both remove the label of the view you are in, and from BULK that removes the BULK label.
+- **Office 365:** an Outlook category. Use right-click > Categorize.
+
+Create the `Unsubscribe` label (or category) once yourself. jev-mail creates `Unsubscribed` and `Manual-Unsubscribe` the first time it needs them. On Office 365, a category that jev-mail creates is not in your master category list, so it has no color until you add it there.
+
+### Your workflow
+
+1. Open an email in BULK from a sender you want gone, and put `Unsubscribe` on it. One email per sender is enough.
+2. Wait for the timer (see [Run it on a timer](#run-it-on-a-timer)), or run `./jev-mail unsubscribe` and then `./jev-mail clean`.
+3. Open `Manual-Unsubscribe` now and then. For each email there, use the sender's unsubscribe link or settings page. Then swap its label for `Unsubscribed`, so `clean` clears that sender too.
+
+### How `unsubscribe` works
+
+`./jev-mail unsubscribe` reads every email with the `Unsubscribe` marker, in any folder. It makes one attempt per sender, and gives that result to every marked email from the same sender.
+
+It unsubscribes only by RFC 8058 one-click. The email must have an https link in `List-Unsubscribe` and the header `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. jev-mail POSTs `List-Unsubscribe=One-Click` to that link. A 2xx answer swaps the marker for `Unsubscribed`. These cases swap it for `Manual-Unsubscribe`:
+
+- The email has no one-click link. A `mailto:` link or a plain web link is not used, because neither proves that you are unsubscribed.
+- The server answers with a redirect or an error, or it cannot be reached.
+
+`--dry-run` lists each sender and the link it would use. It sends nothing and changes no labels.
+
+### How `clean` works
+
+`./jev-mail clean` finds each sender that has an email with the `Unsubscribed` marker in BULK. It then moves every BULK email from those senders to Trash. A marked email outside BULK does not count. If you unsubscribe by hand, put `Unsubscribed` on one of the sender's BULK emails. `clean` needs a BULK category with a `move` action, because that action names the BULK folder. `--dry-run` lists the senders and counts first.
 
 ## Run it on a timer
 
 `run` processes every account in turn. When one account cannot connect (for example, Proton Bridge is not running), `run` prints the error, goes on to the next account, and exits with code 1 at the end. It prints one line per account: emails fetched, decided by Tier 0, decided by Jev, actions, and failures.
 
-To run it every 15 minutes as a systemd user timer:
+To run it every 15 minutes as a systemd user timer: each tick runs `run`, then `unsubscribe`, then `clean`. A failed `run` or `unsubscribe` does not stop the later steps, and its error is in the journal.
 
 ```bash
 mkdir -p ~/.config/systemd/user
