@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from jev_mail import census, tier0
+from jev_mail import census, tier0, unsubscribe
 from jev_mail.actions import run_action
 from jev_mail.classify import classify, matched_categories
 from jev_mail.config import AppConfig, ConfigError, MailboxConfig, load_config
@@ -21,8 +21,12 @@ from jev_mail.providers.base import JevClient
 from jev_mail.state import State
 
 
-# The label (Proton, Gmail) or category (Office 365) you put on a BULK email after unsubscribing from its sender.
-UNSUBSCRIBE_MARKER = "Unsubscribe"
+# Labels on Proton and Gmail, Outlook categories on Office 365.
+# You put UNSUBSCRIBE_REQUEST on an email; `unsubscribe` swaps it for UNSUBSCRIBED_MARKER or MANUAL_MARKER.
+# `clean` trashes the BULK mail of every sender with an UNSUBSCRIBED_MARKER email in BULK.
+UNSUBSCRIBE_REQUEST = "Unsubscribe"
+UNSUBSCRIBED_MARKER = "Unsubscribed"
+MANUAL_MARKER = "Manual-Unsubscribe"
 
 
 def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -268,7 +272,7 @@ def cmd_census(args: argparse.Namespace) -> int:
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
-    """Trashes every BULK email from a sender with at least one BULK email carrying the UNSUBSCRIBE_MARKER label."""
+    """Trashes every BULK email from a sender with at least one BULK email carrying the UNSUBSCRIBED_MARKER label."""
     config_path, env_path = _paths(args)
     try:
         config = load_config(config_path, env_path)
@@ -286,7 +290,7 @@ def cmd_clean(args: argparse.Namespace) -> int:
         bulk_folder = account.folder_prefix + folder
         try:
             with _open_mailbox(account, config_path.parent) as mailbox:
-                mail = mailbox.folder_mail(bulk_folder, UNSUBSCRIBE_MARKER)
+                mail = mailbox.folder_mail(bulk_folder, UNSUBSCRIBED_MARKER)
                 marked = {tier0.sender_address(sender) for _, sender, is_marked in mail if is_marked} - {""}
                 doomed = [(uid, tier0.sender_address(sender)) for uid, sender, _ in mail if tier0.sender_address(sender) in marked]
                 for address in sorted(marked):
@@ -299,6 +303,50 @@ def cmd_clean(args: argparse.Namespace) -> int:
             failed += 1
             continue
         print(f"[clean] {account.host}/{account.username}: {len(marked)} senders, {len(doomed)} emails")
+    return 1 if failed else 0
+
+
+def cmd_unsubscribe(args: argparse.Namespace) -> int:
+    """For each email carrying UNSUBSCRIBE_REQUEST, tries an RFC 8058 one-click unsubscribe, then swaps
+    the label for UNSUBSCRIBED_MARKER on a 2xx answer or MANUAL_MARKER otherwise."""
+    config_path, env_path = _paths(args)
+    try:
+        config = load_config(config_path, env_path)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    failed = 0
+    tag = "dry-run" if args.dry_run else "unsubscribe"
+    for account in config.accounts:
+        done = manual = 0
+        # One attempt per sender; every marked email from that sender gets the same outcome.
+        tried: dict[str, str | None] = {}
+        try:
+            with _open_mailbox(account, config_path.parent) as mailbox:
+                for mail in mailbox.labeled_mail(UNSUBSCRIBE_REQUEST):
+                    who = tier0.sender_address(mail.sender) or mail.sender
+                    if who not in tried:
+                        url = unsubscribe.one_click_url(mail.list_unsubscribe, mail.list_unsubscribe_post)
+                        if args.dry_run:
+                            tried[who] = None
+                            print(f"[{tag}] {who}: " + (f"one-click {url}" if url else f"no one-click link -> {MANUAL_MARKER}"))
+                            continue
+                        tried[who] = unsubscribe.unsubscribe(url) if url else "no one-click link"
+                        if tried[who]:
+                            manual += 1
+                            print(f"[{tag}] {who}: {tried[who]} -> {MANUAL_MARKER}")
+                        else:
+                            done += 1
+                            print(f"[{tag}] {who}: unsubscribed -> {UNSUBSCRIBED_MARKER}")
+                    if not args.dry_run:
+                        mailbox.relabel(mail.uid, UNSUBSCRIBE_REQUEST, MANUAL_MARKER if tried[who] else UNSUBSCRIBED_MARKER)
+        except (OSError, imaplib.IMAP4.error, ConfigError, GmailError, GraphError) as exc:
+            print(f"error: {_mailbox_error_message(exc, account)}", file=sys.stderr)
+            failed += 1
+            continue
+        if not args.dry_run:
+            print(f"[{tag}] {account.host}/{account.username}: {done} unsubscribed, {manual} for you")
     return 1 if failed else 0
 
 
@@ -341,9 +389,16 @@ def build_parser() -> argparse.ArgumentParser:
     census_parser.add_argument("--folder", help="IMAP folder to read in place of the account's folder, e.g. 'All Mail'")
 
     clean_parser = subparsers.add_parser(
-        "clean", help=f"trash BULK mail from every sender you marked with the {UNSUBSCRIBE_MARKER!r} label"
+        "clean", help=f"trash BULK mail from every sender you marked with the {UNSUBSCRIBED_MARKER!r} label"
     )
     clean_parser.add_argument("--dry-run", action="store_true", help="list what would be trashed, without moving anything")
+
+    unsubscribe_parser = subparsers.add_parser(
+        "unsubscribe",
+        help=f"one-click unsubscribe from every email labeled {UNSUBSCRIBE_REQUEST!r}, "
+        f"then relabel it {UNSUBSCRIBED_MARKER!r} or {MANUAL_MARKER!r}",
+    )
+    unsubscribe_parser.add_argument("--dry-run", action="store_true", help="list what would be tried, without sending or relabeling")
 
     subparsers.add_parser("auth-gmail", help="sign in to Gmail once and save the token beside config.yaml")
     subparsers.add_parser("auth-o365", help="sign in to Office 365 once and save the token beside config.yaml")
@@ -367,6 +422,7 @@ def main() -> None:
         "watch": cmd_watch,
         "census": cmd_census,
         "clean": cmd_clean,
+        "unsubscribe": cmd_unsubscribe,
         "auth-gmail": cmd_auth_gmail,
         "auth-o365": cmd_auth_o365,
     }

@@ -60,7 +60,7 @@ def test_clean_trashes_every_bulk_email_from_a_marked_sender(tmp_path, monkeypat
     code, calls = _run(tmp_path, monkeypatch)
 
     assert code == 0
-    assert calls == [("folder_mail", "Folders/BULK", "Unsubscribe"), ("trash", "Folders/BULK", [1, 2])]
+    assert calls == [("folder_mail", "Folders/BULK", "Unsubscribed"), ("trash", "Folders/BULK", [1, 2])]
     assert "[clean] news@example.com: 2 emails in Folders/BULK -> Trash\n" in capsys.readouterr().out
 
 
@@ -115,7 +115,9 @@ def test_gmail_marks_by_label_and_trashes_by_id():
     mailbox = GmailMailbox(MailboxConfig(backend="gmail", host="gmail.googleapis.com"), "/nonexistent", service=service).__enter__()
 
     assert mailbox.folder_mail("Folders/BULK", "Unsubscribe") == [("m1", "a@example.com", True)]
-    assert messages.list.call_args.kwargs["labelIds"] == ["L1"]
+    first, second = (c.kwargs for c in messages.list.call_args_list)
+    assert first["labelIds"] == ["L1", "L2"]
+    assert (second["labelIds"], second["q"]) == (["L1"], "from:a@example.com")
     mailbox.trash("Folders/BULK", ["m1"])
     messages.trash.assert_called_once_with(userId="me", id="m1")
 

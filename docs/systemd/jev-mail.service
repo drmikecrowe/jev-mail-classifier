@@ -1,9 +1,12 @@
 [Unit]
-Description=jev-mail: classify new mail with Jev, once
+Description=jev-mail: classify new mail with Jev, unsubscribe, then clean, once
 
 [Service]
 Type=oneshot
 # Optional ("-"): secrets for a headless run when they do not live in .env, for example when a password manager supplies them.
 EnvironmentFile=-%h/.local/share/jev-mail/env
 # Change this path if the repository is not at ~/jev-mail-classifier.
-ExecStart=%h/jev-mail-classifier/jev-mail run
+# A oneshot runs each ExecStart in order. "-" lets the next step run when a step fails; the journal still has its error.
+ExecStart=-%h/jev-mail-classifier/jev-mail run
+ExecStart=-%h/jev-mail-classifier/jev-mail unsubscribe
+ExecStart=%h/jev-mail-classifier/jev-mail clean

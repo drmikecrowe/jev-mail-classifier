@@ -270,7 +270,9 @@ outside the project directory, because the rows hold real subjects.
 
 `./jev-mail census` reads the From and List-Unsubscribe headers of the newest 2000 emails per account (`--limit`), with no Jev call, and writes `sender-census.csv` beside `config.yaml`. Each row is one sender: emails seen, emails with List-Unsubscribe, whether it is a noreply address, and its current verdict. A sender not in your table with 10 or more emails, 90% of them with List-Unsubscribe, gets `unsubscribe` in the `suggest` column. Copy the rows you agree with into `senders.csv`; `census` never writes it. On IMAP, `--folder "All Mail"` reads every folder.
 
-After you unsubscribe from a sender, put the label `Unsubscribe` on one of its emails in BULK (an Outlook category on Office 365). `./jev-mail clean` then moves every BULK email from that sender to Trash. `--dry-run` lists the senders and counts first.
+To unsubscribe from a sender, put the label `Unsubscribe` on one of its emails (an Outlook category on Office 365). `./jev-mail unsubscribe` tries a one-click unsubscribe (RFC 8058: an https `List-Unsubscribe` link plus `List-Unsubscribe-Post: List-Unsubscribe=One-Click`) for each such email. On a 2xx answer it swaps the label for `Unsubscribed`. When the email has no one-click link, or the request fails, it swaps the label for `Manual-Unsubscribe`, and you unsubscribe by hand. The systemd timer below runs it after each `run`, then runs `clean`. `--dry-run` lists what it would try, and sends nothing.
+
+`./jev-mail clean` moves every BULK email to Trash when its sender has an email in BULK with the label `Unsubscribed`. If you unsubscribe by hand, put `Unsubscribed` on one of the sender's BULK emails yourself. `--dry-run` lists the senders and counts first.
 
 ## Run it on a timer
 
@@ -281,7 +283,7 @@ To run it every 15 minutes as a systemd user timer:
 ```bash
 mkdir -p ~/.config/systemd/user
 cp docs/systemd/jev-mail.service docs/systemd/jev-mail.timer ~/.config/systemd/user/
-# If the repository is not at ~/jev-mail-classifier, change the ExecStart path in jev-mail.service.
+# If the repository is not at ~/jev-mail-classifier, change the three ExecStart paths in jev-mail.service.
 systemctl --user daemon-reload
 systemctl --user start jev-mail.service     # one run now, to check it
 journalctl --user -u jev-mail.service -n 20

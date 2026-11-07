@@ -16,6 +16,7 @@ class Email:
     message_id: str = ""
     sender: str = ""
     list_unsubscribe: str = ""
+    list_unsubscribe_post: str = ""
 
     @property
     def state(self) -> str:
@@ -33,6 +34,10 @@ class MailBackend(Protocol):
     def folder_mail(self, folder: str, marker: str) -> list[tuple[int | str, str, bool]]: ...
 
     def trash(self, folder: str, uids: list[int | str]) -> None: ...
+
+    def labeled_mail(self, marker: str) -> list[Email]: ...
+
+    def relabel(self, uid: int | str, old: str, new: str) -> None: ...
 
     def mark_processed(self, uid: int | str) -> None: ...
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import email
 import os
+from email.utils import parseaddr
 from pathlib import Path
 
 from jev_mail.config import ConfigError, MailboxConfig
@@ -87,20 +88,57 @@ class GmailMailbox:
         return rows
 
     def folder_mail(self, folder: str, marker: str) -> list[tuple[int | str, str, bool]]:
-        """(id, From, carries the `marker` label) for every message under the `folder` label, for `clean`."""
-        if folder not in self._labels:
+        """(id, From, carries the `marker` label) for `clean`: each message under the `folder` label from a sender
+        with a `marker` message there. Other senders are left out, because `clean` ignores them."""
+        if folder not in self._labels or marker not in self._labels:
             return []
-        marker_id = self._labels.get(marker)
-        rows = []
-        for uid in self._list_ids(None, labelIds=[self._labels[folder]]):
-            got = _execute(self._messages().get(userId="me", id=uid, format="metadata", metadataHeaders=["From"]))
-            headers = {h["name"].lower(): h["value"] for h in got.get("payload", {}).get("headers", [])}
-            rows.append((uid, headers.get("from", ""), marker_id is not None and marker_id in got.get("labelIds", [])))
+        folder_id, marker_id = self._labels[folder], self._labels[marker]
+        # One get per message is slow, so read only the marked messages, then search the folder by sender.
+        marked = {parseaddr(self._from(uid)[0])[1].lower() for uid in self._list_ids(None, labelIds=[folder_id, marker_id])}
+        rows: list[tuple[int | str, str, bool]] = []
+        seen: set[str] = set()
+        for address in sorted(marked - {""}):
+            for uid in self._list_ids(None, labelIds=[folder_id], q=f"from:{address}"):
+                if uid not in seen:
+                    seen.add(uid)
+                    sender, label_ids = self._from(uid)
+                    rows.append((uid, sender, marker_id in label_ids))
         return rows
+
+    def _from(self, uid: str) -> tuple[str, list[str]]:
+        """(From header, label ids) of one message."""
+        got = _execute(self._messages().get(userId="me", id=uid, format="metadata", metadataHeaders=["From"]))
+        headers = {h["name"].lower(): h["value"] for h in got.get("payload", {}).get("headers", [])}
+        return headers.get("from", ""), got.get("labelIds", [])
 
     def trash(self, folder: str, uids: list[int | str]) -> None:
         for uid in uids:
             _execute(self._messages().trash(userId="me", id=uid))
+
+    def labeled_mail(self, marker: str) -> list[Email]:
+        """Headers of every message under the `marker` label, for `unsubscribe`. Body is empty."""
+        if marker not in self._labels:
+            return []
+        names = ["From", "Subject", "Message-ID", "List-Unsubscribe", "List-Unsubscribe-Post"]
+        out = []
+        for uid in self._list_ids(None, labelIds=[self._labels[marker]]):
+            got = _execute(self._messages().get(userId="me", id=uid, format="metadata", metadataHeaders=names))
+            headers = {h["name"].lower(): h["value"] for h in got.get("payload", {}).get("headers", [])}
+            out.append(
+                Email(
+                    uid=uid,
+                    subject=headers.get("subject", ""),
+                    body="",
+                    message_id=headers.get("message-id", ""),
+                    sender=headers.get("from", ""),
+                    list_unsubscribe=headers.get("list-unsubscribe", ""),
+                    list_unsubscribe_post=headers.get("list-unsubscribe-post", ""),
+                )
+            )
+        return out
+
+    def relabel(self, uid: int | str, old: str, new: str) -> None:
+        self._modify(uid, add=[self._label_id(new)], remove=[self._label_id(old)])
 
     def _list_ids(self, limit: int | None, **query) -> list[str]:
         """Message ids, newest first, across every page of messages.list, up to `limit`."""

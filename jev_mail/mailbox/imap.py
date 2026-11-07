@@ -110,6 +110,34 @@ class Mailbox:
         self._server.select_folder(folder)
         self._server.move(uids, self._server.find_special_folder(TRASH) or "Trash")
 
+    def labeled_mail(self, marker: str) -> list[Email]:
+        """Headers of every message in the Proton label folder Labels/<marker>, for `unsubscribe`. Body is empty."""
+        folder = f"Labels/{marker}"
+        if folder not in (name for _, _, name in self._server.list_folders()):
+            return []
+        self._server.select_folder(folder)
+        return [
+            Email(
+                uid=uid,
+                subject=_decode_subject(msg),
+                body="",
+                message_id=_decode_header(msg, "Message-ID"),
+                sender=_decode_header(msg, "From"),
+                list_unsubscribe=_decode_header(msg, "List-Unsubscribe"),
+                list_unsubscribe_post=_decode_header(msg, "List-Unsubscribe-Post"),
+            )
+            for uid, msg in self._headers("FROM SUBJECT MESSAGE-ID LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST")
+        ]
+
+    def relabel(self, uid: int | str, old: str, new: str) -> None:
+        """Moves `uid` from Labels/<old> to Labels/<new>, which swaps the Proton label and leaves its folder alone."""
+        # shortcut: relies on Proton Bridge turning a move between label folders into a label swap; not checked live.
+        target = f"Labels/{new}"
+        if target not in (name for _, _, name in self._server.list_folders()):
+            self._server.create_folder(target)
+        self._server.select_folder(f"Labels/{old}")
+        self._server.move([uid], target)
+
     def _headers(self, fields: str) -> list[tuple[int, Message]]:
         uids = self._server.search(["ALL"])
         out = []

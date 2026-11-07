@@ -130,6 +130,27 @@ class GraphMailbox:
             # A well-known folder name is a valid destinationId.
             self._request("POST", f"{_message_path(uid)}/move", json={"destinationId": "deleteditems"})
 
+    def labeled_mail(self, marker: str) -> list[Email]:
+        """Every message in any folder with the `marker` category, for `unsubscribe`. Body is empty."""
+        escaped = marker.replace("'", "''")
+        params: dict | None = {
+            "$filter": f"categories/any(c:c eq '{escaped}')",
+            "$select": "id,subject,from,internetMessageId,internetMessageHeaders",
+            "$top": str(PAGE_SIZE),
+        }
+        url: str | None = ALL_MAIL_PATH
+        out: list[Email] = []
+        while url:
+            page = self._request("GET", url, params=params)
+            url, params = page.get("@odata.nextLink"), None
+            out += [self._email(item) for item in page.get("value", [])]
+        return out
+
+    def relabel(self, uid: int | str, old: str, new: str) -> None:
+        categories = self._request("GET", _message_path(uid), params={"$select": "categories"}).get("categories", [])
+        kept = [c for c in categories if c not in (old, new)]
+        self._request("PATCH", _message_path(uid), json={"categories": [*kept, new]})
+
     def mark_processed(self, uid: int | str) -> None:
         self.add_tag(uid, PROCESSED_CATEGORY)
         if self._pending is not None:
@@ -181,6 +202,7 @@ class GraphMailbox:
             message_id=item.get("internetMessageId") or "",
             sender=formataddr((sender.get("name") or "", sender.get("address") or "")),
             list_unsubscribe=headers.get("list-unsubscribe", ""),
+            list_unsubscribe_post=headers.get("list-unsubscribe-post", ""),
         )
 
     def _folder_id(self, name: str) -> str:
